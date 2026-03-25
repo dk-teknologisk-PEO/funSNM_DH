@@ -15,8 +15,8 @@
       "datasets": [1]
     },
     "paths": {
-      "topology": "C:/Users/peo/Documents/GitHub/DH simulation/network_topologies",
-      "data": "C:/Users/peo/Documents/GitHub/DH simulation/results",
+      "topology": "C:/Users/PEO/Documents/GitHub/funSNM_data/network_topologies",
+      "data": "C:/Users/PEO/Documents/GitHub/funSNM_data/results",
       "weather": "data/weather/"
     },
     "cutoff": {
@@ -27,8 +27,8 @@
       "delta_T_gate_threshold": 15
     },
     "initialization": {
-      "alpha_forget": 1.001,
-      "measurement_noise": 0.1,
+      "alpha_forget": 1.005,
+      "measurement_noise": 0.25,
       "process_noise_offset": 0.01,
       "process_noise_U": 0.001,
       "state_uncertainty_offset": 2.0,

@@ -76,7 +76,7 @@ for network = networks
         for t = 1:length(timestamps)
             disp(t)
             if mod(t,100)==0
-                waitbar(t/(length(timestamps)*length(csac_ids))+(csac)/length(csac_ids),w,strcat("Running network. At timestep: ", string(t), "/", string(length(timestamps)), ", network: ", string(network)))
+                waitbar(t/(length(timestamps)*length(csac_ids))+(csac)/length(csac_ids),w,strcat("Running network. At timestep: ", string(t), "/", string(length(timestamps)),", csac: ",string(csac),"/",string(length(csac_ids)),", network: ", string(network)))
             end
             time = timestamps(t);
             current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
@@ -93,7 +93,8 @@ for network = networks
 
             T_junction_pf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_cutoff, pf_states);
             current_data.T_main_pf_C = T_junction_pf_C;
-
+            ukf_offsets = nan([num_houses_csac,1]);
+            pf_offsets = nan([num_houses_csac,1]);
             for i = 1:num_houses_csac
                 house_id = houses_csac_ids(i);
                 house_data = current_data(current_data.house_id==house_id,:);
@@ -128,13 +129,24 @@ for network = networks
                         end
                     end
                 end
-     
+                ukf_offsets(i) = ukf_states{i}.x(1);
+                pf_offsets(i) = ukf_states{i}.x(1);
                 
                 % Log the results
                 logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
                 logger_pf = update_logger(logger_pf, t, i, time, pf_states{i}, diagnostics_pf);
                 % offset_history(prev_houses+i,t) = ukf_states{i}.x(1);
                 % u_history(prev_houses+i,t) = ukf_states{i}.x(2);
+            end
+            mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
+            mean_pf_offsets = mean(pf_offsets, 'omitmissing');
+            for i=1:num_houses_csac
+                if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
+                    ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
+                end
+                if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
+                    pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
+                end
             end
         end
         % prev_houses = prev_houses + size(num_houses_csac);
