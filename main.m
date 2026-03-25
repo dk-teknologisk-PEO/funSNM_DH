@@ -7,14 +7,22 @@ addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diag
 
 % read config-file
 config = jsondecode(fileread("config.json"));
+
+% ukf-configuration
 R_base = config.project.initialization.ukf.measurement_noise^2;
 Q_base = diag([(config.project.initialization.ukf.process_noise_offset)^2, (config.project.initialization.ukf.process_noise_U)^2]);
 P_base = diag([(config.project.initialization.ukf.state_uncertainty_offset)^2, (config.project.initialization.ukf.state_uncertainty_U)^2]);
+
+% pf-configuration
 num_particles = config.project.initialization.pf.num_particles;
+
+% gating configuration
 flow_threshold = config.project.cutoff.flow_cutoff;
 delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
 min_active_houses = config.project.initialization.min_active_houses;
 max_innovation = config.project.initialization.max_innovation_C;
+air_temp_cutoff = config.project.initialization.max_air_temperature;
+
 networks = config.project.datasets.datasets;
 
 % load network topology and measurement data
@@ -94,10 +102,11 @@ for network = networks
             % extract data from this timestep
             current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
             current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
+            current_T_air_C = T_air_C((year(T_air_C.time)==year(time)) & (month(T_air_C.time)==month(time)) & (day(T_air_C.time)==day(time)),:).values;
             num_active_houses = sum(current_data.flow_kg_h >= flow_threshold);
             is_csac_active = (num_active_houses > config.project.initialization.min_active_houses);
             skip_timestep = false;
-            if isempty(current_data) || isempty(current_T_soil_C)
+            if isempty(current_data) || isempty(current_T_soil_C) || (current_T_air_C >10 )
                 skip_timestep = true;
             end
 
