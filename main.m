@@ -7,15 +7,27 @@ addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diag
 
 % read config-file
 config = jsondecode(fileread("config.json"));
+
+% ukf-setup
 R_base = config.project.initialization.ukf.measurement_noise^2;
 Q_base = diag([(config.project.initialization.ukf.process_noise_offset)^2, (config.project.initialization.ukf.process_noise_U)^2]);
 P_base = diag([(config.project.initialization.ukf.state_uncertainty_offset)^2, (config.project.initialization.ukf.state_uncertainty_U)^2]);
+
+% pf-setup
 num_particles = config.project.initialization.pf.num_particles;
-flow_threshold = config.project.cutoff.flow_cutoff;
-delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
+
+% gating
 min_active_houses = config.project.initialization.min_active_houses;
 max_innovation = config.project.initialization.max_innovation_C;
+flow_threshold = config.project.cutoff.flow_cutoff;
+delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
+
+% analysis-setup
+keep_mean_zero = config.project.initialization.modify_mean_offset;
+
+% networks concidered
 networks = config.project.datasets.datasets;
+
 
 % load network topology and measurement data
 T_soil_C = soilTemp(config);
@@ -93,7 +105,9 @@ for network = networks
 
             % extract data from this timestep
             current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
-            current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
+            if ~isempty(T_soil_C(T_soil_C.time==time,:).values)
+                current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
+            end
             num_active_houses = sum(current_data.flow_kg_h >= flow_threshold);
             is_csac_active = (num_active_houses > config.project.initialization.min_active_houses);
             skip_timestep = false;
@@ -158,15 +172,17 @@ for network = networks
 
                 end
             end
-            mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
-            mean_pf_offsets = mean(pf_offsets, 'omitmissing');
-            for i=1:num_houses_csac
-                if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
-                    ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
-                end
-                if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
-                    pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
-                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
+            if keep_mean_zero
+                mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
+                mean_pf_offsets = mean(pf_offsets, 'omitmissing');
+                for i=1:num_houses_csac
+                    if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
+                        ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
+                    end
+                    if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
+                        pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
+                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
+                    end
                 end
             end
         end

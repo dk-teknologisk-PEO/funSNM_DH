@@ -20,20 +20,26 @@
       "weather": "data/weather/"
     },
     "cutoff": {
-      "flow_cutoff": 36,
+      "flow_cutoff": 40,
       "flow_cutoff_high": 100,
       "flow_cutoff_low": 50,
-      "flow_gate_threshold": 40,
-      "delta_T_gate_threshold": 15
+      "delta_T_gate_threshold": 30
     },
     "initialization": {
-      "alpha_forget": 1.005,
-      "measurement_noise": 0.25,
-      "process_noise_offset": 0.01,
-      "process_noise_U": 0.001,
-      "state_uncertainty_offset": 2.0,
-      "state_uncertainty_U": 0.2,
-      "num_particles": 1000
-   }
+      "ukf": {
+        "alpha_forget": 1.005,
+        "measurement_noise": 0.25,
+        "process_noise_offset": 0.01,
+        "process_noise_U": 0.001,
+        "state_uncertainty_offset": 2.0,
+        "state_uncertainty_U": 0.2
+      },
+      "pf": {
+        "num_particles": 1000
+      },
+      "min_active_houses": 3,
+      "max_innovation_C": 3,
+      "modify_mean_offset": false
+    }
   }
 }
