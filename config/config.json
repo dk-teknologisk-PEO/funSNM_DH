@@ -39,7 +39,7 @@
       },
       "max_air_temperature": 10,
       "min_active_houses": 3,
-      "max_innovation_C": 3,
+      "max_innovation_C": 5,
       "modify_mean_offset": true
     }
   }
