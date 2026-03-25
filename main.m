@@ -135,6 +135,7 @@ for network = networks
                         predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h,ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
                         if abs(innovation) < max_innovation
+                            
                             [ukf_states{i}, diagnostics_ukf] = update_ukf_house(ukf_states{i}, house_data, current_T_soil_C);
                             ukf_offsets(i) = ukf_states{i}.x(1);
                             log_ukf = true;

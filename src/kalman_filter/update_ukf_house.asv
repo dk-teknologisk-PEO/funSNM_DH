@@ -23,8 +23,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C)
     %% 1. Unpack State and Define Constants
     x = state.x; % State: [offset_temp; U_value]
     P = state.P;
-    Q_base_offset_var = state.Q(1,1);
-    Q_base_U_var = state.Q(2,2);
+    Q_base_offset_var = state.Q(1);
     
     n = length(x);
     
@@ -36,8 +35,8 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C)
     %% 2. Sensitivity-Based Dynamic Process Noise (Q)
     
     % Base process noise for slow drift
-    % Q_base_offset_var = (0.001)^2;
-    % Q_base_U_var      = (0.0001)^2;
+    Q_base_offset_var = (0.001)^2;
+    Q_base_U_var      = (0.0001)^2;
     
     % To calculate sensitivity, we need the current best guess for the states
     current_offset = x(1);
