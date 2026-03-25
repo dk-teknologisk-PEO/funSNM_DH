@@ -30,7 +30,7 @@ networks = config.project.datasets.datasets;
 
 
 % load network topology and measurement data
-T_soil_C = soilTemp(config);
+[T_soil_C, T_air_C] = soilTemp(config);
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf'); % Create a unique folder for this run
 output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf'); % Create a unique folder for this run
 w = waitbar(0.0, "Starting analysis");
