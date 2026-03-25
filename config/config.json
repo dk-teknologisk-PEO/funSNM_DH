@@ -15,8 +15,8 @@
       "datasets": [1]
     },
     "paths": {
-      "topology": "C:/Users/peo/Documents/GitHub/DH simulation/network_topologies",
-      "data": "C:/Users/peo/Documents/GitHub/DH simulation/results",
+      "topology": "C:/Users/PEO/Documents/GitHub/funSNM_data/network_topologies",
+      "data": "C:/Users/PEO/Documents/GitHub/funSNM_data/results",
       "weather": "data/weather/"
     },
     "cutoff": {

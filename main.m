@@ -106,17 +106,15 @@ for network = networks
             num_active_houses = sum(current_data.flow_kg_h >= flow_threshold);
             is_csac_active = (num_active_houses > config.project.initialization.min_active_houses);
             skip_timestep = false;
-            if isempty(current_data) || isempty(current_T_soil_C) || (current_T_air_C >10 )
+            if isempty(current_data) || isempty(current_T_soil_C) || (current_T_air_C > air_temp_cutoff )
                 skip_timestep = true;
+            else
+                T_junction_ukf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_threshold, ukf_states);
+                current_data.T_main_ukf_C = T_junction_ukf_C;
+    
+                T_junction_pf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_threshold, pf_states);
+                current_data.T_main_pf_C = T_junction_pf_C;
             end
-
-
-            T_junction_ukf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_threshold, ukf_states);
-            current_data.T_main_ukf_C = T_junction_ukf_C;
-
-            T_junction_pf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_threshold, pf_states);
-            current_data.T_main_pf_C = T_junction_pf_C;
-
 
             for i = 1:num_houses_csac
                 log_ukf = false;
