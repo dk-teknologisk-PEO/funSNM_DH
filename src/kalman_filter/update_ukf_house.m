@@ -1,6 +1,6 @@
 % update_ukf_house.m
 
-function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C)
+function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, config)
 %UPDATE_UKF_HOUSE Performs a UKF update for a single service pipe/meter.
 %   This function estimates the meter temperature offset and the service
 %   pipe U-value, using a flow-dependent process noise model.
@@ -147,10 +147,10 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C)
     
     % Apply physical constraints to the state
     % Define the boundaries for the states
-    offset_min = -2.0; 
-    offset_max = 2.0;
-    U_min = 0.08; 
-    U_max = 0.20;
+    U_min = config.project.bounds.U_min;
+    U_max = config.project.bounds.U_max;
+    offset_min = config.project.bounds.offset_min;
+    offset_max = config.project.bounds.offset_max;
     
     % Clamp the estimated states to stay within the physical boundaries
     x_new(1) = max(min(x_new(1), offset_max), offset_min); % Clamp offset
