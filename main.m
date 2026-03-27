@@ -12,6 +12,8 @@ config = jsondecode(fileread("config.json"));
 R_base = config.project.initialization.ukf.measurement_noise^2;
 Q_base = diag([(config.project.initialization.ukf.process_noise_offset)^2, (config.project.initialization.ukf.process_noise_U)^2]);
 P_base = diag([(config.project.initialization.ukf.state_uncertainty_offset)^2, (config.project.initialization.ukf.state_uncertainty_U)^2]);
+innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_offset * config.project.initialization.innovation_gate_N_sigma;
+
 
 % pf-configuration
 num_particles = config.project.initialization.pf.num_particles;
@@ -75,6 +77,8 @@ for network = networks
         ukf_states = cell(1, num_houses_csac);
         pf_particles = cell(1, num_houses_csac);
         pf_states = cell(1, num_houses_csac);
+        ukf_innovation_gate = nan([1,num_houses_csac]);
+        pf_innovation_gate = nan([1,num_houses_csac]);
         
         % keep a history of last known main pipe temperatures for each
         % house
@@ -82,7 +86,7 @@ for network = networks
         last_valid_T_main_pf_C = nan(num_houses_csac,1);
 
         for i = 1:num_houses_csac
-            x_init = [randn()*0.3; 0.14 + randn()*0.03]; % make initial guess for house i
+            x_init = [randn()*0.3; 0.12 + randn()*0.03]; % make initial guess for house i
             
             % set up the UKF-state for house i
             ukf_states{i}=initialize_kalman_filter(x_init, Q_base, R_base, P_base);
@@ -90,6 +94,8 @@ for network = networks
             pf_particles{i} = initialize_pf_state(num_particles, x_init, P_base);
             pf_states{i}.x = x_init;
             pf_states{i}.P = P_base;
+            ukf_innovation_gate(i) = innovation_gate_initial;
+            pf_innovation_gate(i) = innovation_gate_initial;
         end
         
         % set up loggers for the two filters
@@ -130,61 +136,63 @@ for network = networks
                     log_ukf = false;
                     log_pf = false;
                     % if ~skip_timestep
-                        house_id = houses_csac_ids(i);
-                        house_data = current_data(current_data.house_id==house_id,:);
-                        is_flow_sufficient = (house_data.flow_kg_h > config.project.cutoff.flow_cutoff);
-                       
-                        
-                        delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
-                        delta_T_pf_sufficient = ((house_data.T_main_pf_C - current_T_soil_C) >= delta_T_gate_threshold);
+                    house_id = houses_csac_ids(i);
+                    house_data = current_data(current_data.house_id==house_id,:);
+                    is_flow_sufficient = (house_data.flow_kg_h > config.project.cutoff.flow_cutoff);
+                   
+                    
+                    delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
+                    delta_T_pf_sufficient = ((house_data.T_main_pf_C - current_T_soil_C) >= delta_T_gate_threshold);
 
-                        % check if all gating conditions are fulfilled
-                        can_update_ukf = is_csac_active && is_flow_sufficient && delta_T_ukf_sufficient;
-                        can_update_pf = is_csac_active && is_flow_sufficient && delta_T_pf_sufficient;
-                        
-                        if can_update_ukf
-                            if isnan(last_valid_T_main_ukf_C(i))
-                                delta_T_main_change_ukf = 0;
-                            else
-                                delta_T_main_change_ukf = abs(house_data.T_main_ukf_C-last_valid_T_main_ukf_C(i));
-                            end
-                            is_system_stable = (delta_T_main_change_ukf < max_delta_T_change);
-                            last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                            if is_system_stable
-                            % update UKF and particle filter
-                                predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h,ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
-                                innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
-                                if abs(innovation) < max_innovation
-                                    
-                                    [ukf_states{i}, diagnostics_ukf] = update_ukf_house(ukf_states{i}, house_data, current_T_soil_C);
-                                    ukf_offsets(i) = ukf_states{i}.x(1);
-                                    log_ukf = true;
-                                    last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                                end
+                    % check if all gating conditions are fulfilled
+                    can_update_ukf = is_csac_active && is_flow_sufficient && delta_T_ukf_sufficient;
+                    can_update_pf = is_csac_active && is_flow_sufficient && delta_T_pf_sufficient;
+                    
+                    if can_update_ukf
+                        if isnan(last_valid_T_main_ukf_C(i))
+                            delta_T_main_change_ukf = 0;
+                        else
+                            delta_T_main_change_ukf = abs(house_data.T_main_ukf_C-last_valid_T_main_ukf_C(i));
+                        end
+                        is_system_stable = (delta_T_main_change_ukf < max_delta_T_change);
+                        last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
+                        if is_system_stable
+                        % update UKF and particle filter
+                            predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h,ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
+                            innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
+                            if abs(innovation) < ukf_innovation_gate(i)
+                                
+                                [ukf_states{i}, diagnostics_ukf] = update_ukf_house(ukf_states{i}, house_data, current_T_soil_C, config);
+                                ukf_offsets(i) = ukf_states{i}.x(1);
+                                log_ukf = true;
+                                last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
+                                ukf_innovation_gate(i)= sqrt(diagnostics_ukf.P_zz)*config.project.initialization.innovation_gate_N_sigma;
                             end
                         end
-                        
-                        if can_update_pf
-                            if isnan(last_valid_T_main_pf_C(i))
-                                delta_T_main_change_pf = 0;
-                            else
-                                delta_T_main_change_pf = abs(house_data.T_main_pf_C - last_valid_T_main_pf_C(i));
-                            end
-                            is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
-                            last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
-                            if is_system_stable
-                                predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
-                                innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
-                                if abs(innovation) < max_innovation
-                                    [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base);
-                                    pf_states{i}.x = est_pf;
-                                    pf_states{i}.P = cov_pf;
-                                    pf_offsets(i) = pf_states{i}.x(1);
-                                    log_pf = true;
-                                    last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
-                                end
+                    end
+                    
+                    if can_update_pf
+                        if isnan(last_valid_T_main_pf_C(i))
+                            delta_T_main_change_pf = 0;
+                        else
+                            delta_T_main_change_pf = abs(house_data.T_main_pf_C - last_valid_T_main_pf_C(i));
+                        end
+                        is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
+                        last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
+                        if is_system_stable
+                            predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
+                            innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
+                            if abs(innovation) < max_innovation
+                                [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
+                                pf_states{i}.x = est_pf;
+                                pf_states{i}.P = cov_pf;
+                                pf_offsets(i) = pf_states{i}.x(1);
+                                log_pf = true;
+                                last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
+                                pf_innovation_gate(i) = sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma;
                             end
                         end
+                    end
                     if log_ukf
                         logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
                     elseif t > 1

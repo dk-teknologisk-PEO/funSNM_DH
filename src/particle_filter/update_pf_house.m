@@ -1,4 +1,4 @@
-function [particles, state_estimate, state_covariance, diagnostics] = update_pf_house(particles, house_data, T_ambient_C, R, Q)
+function [particles, state_estimate, state_covariance, diagnostics] = update_pf_house(particles, house_data, T_ambient_C, R, Q, config)
 %UPDATE_PF_HOUSE Performs a particle filter update for a single house.
 %   Uses a Sequential Importance Resampling (SIR) algorithm.
 %
@@ -26,8 +26,12 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
 
     %% 2. Apply State Constraints (Project particles back into valid range)
     % This is crucial for preventing particles from wandering into absurd regions.
-    offset_min = -2.0; offset_max = 2.0;
-    U_min = 0.10; U_max = 0.20;
+    offset_min = config.project.cutoff.offset_min;
+    offset_max = config.project.cutoff.offset_max;
+    U_min = config.project.cutoff.U_min;
+    U_max = config.project.cutoff.U_max;
+    % offset_min = -2.0; offset_max = 2.0;
+    % U_min = 0.10; U_max = 0.20;
     
     particles(1, :) = max(min(particles(1, :), offset_max), offset_min);
     particles(2, :) = max(min(particles(2, :), U_max), U_min);
