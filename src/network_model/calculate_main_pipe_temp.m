@@ -23,7 +23,7 @@ function T_main_fit_C = calculate_main_pipe_temp(current_data, current_T_soil_C,
         service_lengths_m = [current_data.length_service_m];
         T_main_C = get_main_temp(current_data.T_supply_C+offsets', current_data.flow_kg_h,u_service', service_lengths_m, current_T_soil_C);
         current_data.T_main_C = T_main_C;
-
+        T_first_guess = max(current_data.T_main_C);
         for m = 1:num_houses
         
             current_data_sub = current_data;
@@ -33,8 +33,8 @@ function T_main_fit_C = calculate_main_pipe_temp(current_data, current_T_soil_C,
                 current_id = current_data(m,:).house_id;
                 current_data_sub(m,:)=[];
                 fun = @(x)main_temp_estimator(x, current_data,current_data_sub, current_T_soil_C, U_csac, T_start_C);
-                p = fminsearch(fun,max(current_data_sub.T_main_C));
-                
+                p = fminsearch(fun,T_first_guess);
+                T_first_guess = p(1);
                 T_prev_C = p(1);
                 
                 for i=1:m
