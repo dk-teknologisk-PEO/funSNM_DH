@@ -15,6 +15,8 @@ if config.project.location.city == "Aalborg"
     meter_data = meter_data(meter_data.timestamp.Minute==00,:);
     meter_data = meter_data((meter_data.timestamp.Hour>23) | (meter_data.timestamp.Hour<4),:);
     meter_data = meter_data(:,{'timestamp', 'house_id','T_supply_C', 'flow_kg_h','T_tapoff_C'});
+    meter_data = meter_data((meter_data.timestamp>config.project.time.start) & (meter_data.timestamp<config.project.time.end),:);
+    network_temp = network_temp((network_temp.timestamp>config.project.time.start) & (network_temp.timestamp<config.project.time.end),:);
 end
 
 

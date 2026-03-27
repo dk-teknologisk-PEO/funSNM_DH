@@ -42,7 +42,8 @@
       "max_innovation_C": 0.5,
       "max_delta_T_change_rate": 1,
       "modify_mean_offset": true,
-      "hibernation_reset_threshold_hours": 720
+      "hibernation_reset_threshold_hours": 720,
+      "innovation_gate_N_sigma": 3
     },
     "bounds": {
       "U_min": 0.8,
