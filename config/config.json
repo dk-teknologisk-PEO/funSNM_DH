@@ -41,7 +41,7 @@
       "pf": {
         "num_particles": 1000
       },
-      "max_air_temperature": 10,
+      "max_air_temperature": 50,
       "min_active_houses": 3,
       "max_innovation_C": 1,
       "modify_mean_offset": true,
