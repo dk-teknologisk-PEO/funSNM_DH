@@ -180,9 +180,9 @@ for network = networks
                         is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
                         last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
                         if is_system_stable
-                            predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
-                            innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
-                            if abs(innovation) < pf_innovation_gate(i)
+                            % predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
+                            % innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
+                            % if abs(innovation) < pf_innovation_gate(i)
                                 [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
                                 pf_states{i}.x = est_pf;
                                 pf_states{i}.P = cov_pf;
@@ -190,7 +190,7 @@ for network = networks
                                 log_pf = true;
                                 last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
                                 pf_innovation_gate(i) = sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma;
-                            end
+                            % end
                         end
                     end
                     if log_ukf
