@@ -23,7 +23,11 @@
       "flow_cutoff": 40,
       "flow_cutoff_high": 100,
       "flow_cutoff_low": 50,
-      "delta_T_gate_threshold": 30
+      "delta_T_gate_threshold": 30,
+      "U_min": 0.8,
+      "U_max": 2.0,
+      "offset_min": -2,
+      "offset_max": 2
     },
     "initialization": {
       "ukf": {
@@ -39,17 +43,10 @@
       },
       "max_air_temperature": 50,
       "min_active_houses": 3,
-      "max_innovation_C": 0.5,
-      "max_delta_T_change_rate": 1,
+      "max_innovation_C": 1,
       "modify_mean_offset": true,
-      "hibernation_reset_threshold_hours": 720,
-      "innovation_gate_N_sigma": 3
-    },
-    "bounds": {
-      "U_min": 0.8,
-      "U_max": 0.2,
-      "offset_min": -2,
-      "offset_max": 2
+      "max_delta_T_change_rate": 1,
+      "innovation_gate_N_sigma": 3.0
     }
   }
 }

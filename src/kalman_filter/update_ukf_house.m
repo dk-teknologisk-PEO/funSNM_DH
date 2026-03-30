@@ -147,10 +147,10 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     
     % Apply physical constraints to the state
     % Define the boundaries for the states
-    U_min = config.project.bounds.U_min;
-    U_max = config.project.bounds.U_max;
-    offset_min = config.project.bounds.offset_min;
-    offset_max = config.project.bounds.offset_max;
+    offset_min = config.project.cutoff.offset_min;%-2.0; 
+    offset_max = config.project.cutoff.offset_max;%2.0;
+    U_min = config.project.cutoff.U_min;%0.08; 
+    U_max = config.project.cutoff.U_max;%0.20;
     
     % Clamp the estimated states to stay within the physical boundaries
     x_new(1) = max(min(x_new(1), offset_max), offset_min); % Clamp offset

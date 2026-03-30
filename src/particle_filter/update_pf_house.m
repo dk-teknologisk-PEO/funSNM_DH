@@ -1,4 +1,19 @@
-% In update_pf_house.m
+function [particles, state_estimate, state_covariance, diagnostics] = update_pf_house(particles, house_data, T_ambient_C, R, Q, config)
+%UPDATE_PF_HOUSE Performs a particle filter update for a single house.
+%   Uses a Sequential Importance Resampling (SIR) algorithm.
+%
+%   Args:
+%       particles (2xN matrix): The current set of N particles [offset; U_value].
+%       house_data (table row): Current meter data.
+%       T_main_C (scalar): Estimated main pipe temperature.
+%       T_ambient_C (scalar): Ambient (soil) temperature.
+%       R (scalar): Measurement noise variance.
+%       Q (2x2 matrix): Process noise covariance.
+%
+%   Returns:
+%       particles (2xN matrix): The updated set of particles.
+%       state_estimate (2x1 vector): The new mean state estimate.
+%       state_covariance (2x2 matrix): The new state covariance.
 
 function [particles, state_estimate, state_covariance, diagnostics] = update_pf_house(propagated_particles, house_data, T_ambient_C, R, z_pred, config)
 %UPDATE_PF_HOUSE Performs a particle filter update (weighting & resampling).
@@ -8,7 +23,21 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
     weights = ones(1, N) / N; % Initialize weights for this step
     particles = propagated_particles; % Use the propagated particles
 
-    % 1. Weighting (Evaluate each particle against the measurement)
+    %% 2. Apply State Constraints (Project particles back into valid range)
+    % This is crucial for preventing particles from wandering into absurd regions.
+    offset_min = config.project.cutoff.offset_min;
+    offset_max = config.project.cutoff.offset_max;
+    U_min = config.project.cutoff.U_min;
+    U_max = config.project.cutoff.U_max;
+    % offset_min = -2.0; offset_max = 2.0;
+    % U_min = 0.10; U_max = 0.20;
+    
+    particles(1, :) = max(min(particles(1, :), offset_max), offset_min);
+    particles(2, :) = max(min(particles(2, :), U_max), U_min);
+    
+    %% 3. Weighting (Evaluate each particle against the measurement)
+    % Calculate the likelihood of the measurement given each particle's state.
+    
     measurement = house_data.T_supply_C;
     likelihoods = zeros(1, N);
     
