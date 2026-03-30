@@ -118,7 +118,7 @@ for network = networks
         for t = 1:length(timestamps)
 
             disp(t)
-            if mod(t,10)==0
+            if mod(t,100)==0
                 waitbar(t/(length(timestamps)*length(csac_ids))+(csac)/length(csac_ids),w,strcat("Running network. At timestep: ", string(t), "/", string(length(timestamps)),", csac: ",string(csac),"/",string(length(csac_ids)),", network: ", string(network)))
             end
             time = timestamps(t);
@@ -222,28 +222,39 @@ for network = networks
                     logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
                 end % end of pf-logger
             end
-            if error_meaning
-                mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
-                mean_pf_offsets = mean(pf_offsets, 'omitmissing');
-                for i=1:num_houses_csac
-                    if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
-                        ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
-                    end
-                    if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
-                        pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
-                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
-                    end
+            if log_ukf
+                logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
+            elseif t > 1
+                logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
+                logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
+            end
+            if log_pf
+                logger_pf = update_logger(logger_pf, t, i, time, pf_states{i}, diagnostics_pf);
+            elseif t > 1
+                logger_pf.state_estimates(:, i, t) = logger_pf.state_estimates(:, i, t-1);
+                logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
+
+            end
+        end
+        if error_meaning
+            mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
+            mean_pf_offsets = mean(pf_offsets, 'omitmissing');
+            for i=1:num_houses_csac
+                if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
+                    ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
+                end
+                if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
+                    pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
+                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
                 end
             end
-        end 
-        plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
-        plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
-        save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
-        save_logger_to_csv(logger_pf, output_folder_pf, strcat('pf_csac_', string(csac)));
+        end
     end
     % prev_houses = prev_houses + size(num_houses_csac);
     % --- Plot and Save Diagnostics for this CSAC ---
-   
+    plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
+    plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
+    save_logger_to_csv(logger_ukf, g)
 end
 % end % End of CSAC loop
 % end % End of network loop

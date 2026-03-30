@@ -15,13 +15,14 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
 %       state_estimate (2x1 vector): The new mean state estimate.
 %       state_covariance (2x2 matrix): The new state covariance.
 
-function [particles, state_estimate, state_covariance, diagnostics] = update_pf_house(propagated_particles, house_data, T_ambient_C, R, z_pred, config)
-%UPDATE_PF_HOUSE Performs a particle filter update (weighting & resampling).
-%   Assumes particles have already been propagated through the process model.
-
-    N = size(propagated_particles, 2); % Number of particles
+    N = size(particles, 2); % Number of particles
     weights = ones(1, N) / N; % Initialize weights for this step
-    particles = propagated_particles; % Use the propagated particles
+
+    %% 1. Prediction (Propagate each particle)
+    % Each particle evolves according to the process model (a random walk).
+    % We add noise sampled from the process noise covariance Q.
+    process_noise = chol(Q)' * randn(2, N);
+    particles = particles + process_noise;
 
     %% 2. Apply State Constraints (Project particles back into valid range)
     % This is crucial for preventing particles from wandering into absurd regions.
@@ -42,72 +43,95 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
     likelihoods = zeros(1, N);
     
     for i = 1:N
+        % Get the state hypothesis from the current particle
         particle_offset = particles(1, i);
         particle_U      = particles(2, i);
+        
+        % Predict the measurement using the particle's state (REUSING YOUR FUNCTION)
         predicted_measurement = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, particle_U, house_data.length_service_m, T_ambient_C) - particle_offset;
+        
+        % Calculate the probability of the actual measurement under a Gaussian assumption
+        % This is the core of the weighting step.
         error = measurement - predicted_measurement;
         likelihoods(i) = (1 / sqrt(2 * pi * R)) * exp(-0.5 * error^2 / R);
     end
     
-    % 2. Normalize weights
-    sum_weights = sum(weights .* likelihoods);
-    if sum_weights > 1e-15
-        weights = (weights .* likelihoods) / sum_weights;
+    % Update the weights by multiplying with the new likelihoods
+    weights = weights .* likelihoods;
+    
+    % Normalize the weights so they sum to 1
+    sum_weights = sum(weights);
+    if sum_weights > 1e-15 % Avoid division by zero
+        weights = weights / sum_weights;
     else
-        weights = ones(1, N) / N; % Avoid collapse, re-initialize weights
+        % All particles are very unlikely. Re-initialize to avoid collapse.
+        weights = ones(1, N) / N;
     end
 
-    % 3. Resampling (if needed)
+    %% 4. Resampling (Based on effective sample size)
+    % This step combats particle degeneracy.
+    
     N_eff = 1 / sum(weights.^2);
-    if N_eff < N * 0.5
-        % ... (Systematic resampling logic) ...
-        indices = systematic_resample(weights);
+    resample_threshold = N * 0.5; % Resample if N_eff drops below 50%
+    
+    if N_eff < resample_threshold
+        % Perform systematic resampling (a low-variance method)
+        indices = zeros(1, N);
+        C = cumsum(weights);
+        u1 = rand() / N;
+        i = 1;
+        for j = 1:N
+            u = u1 + (j-1)/N;
+            while u > C(i)
+                i = i + 1;
+            end
+            indices(j) = i;
+        end
+        
+        % Replace old particles with resampled ones and reset weights
         particles = particles(:, indices);
         weights = ones(1, N) / N;
         
-        % Optional Jittering
-        jitter_Q = [0.001^2, 0; 0, 0.0001^2] * 0.1; % Example small jitter
+        % OPTIONAL BUT RECOMMENDED: Jittering / Regularization
+        % Add a small amount of noise to the resampled particles to re-introduce diversity.
+        jitter_Q = Q * 0.1; % Use a fraction of the process noise
         particles = particles + chol(jitter_Q)' * randn(2, N);
-        particles(1, :) = max(min(particles(1, :), 2.0), -2.0);
-        particles(2, :) = max(min(particles(2, :), 0.20), 0.10);
+        % Re-apply constraints after jittering
+        particles(1, :) = max(min(particles(1, :), offset_max), offset_min);
+        particles(2, :) = max(min(particles(2, :), U_max), U_min);
     end
 
-    % 4. State Estimation
+    %% 5. State Estimation (Compute mean and covariance from particles)
+    % The final estimate is the weighted mean of the particles.
     state_estimate = particles * weights';
+    
+    % The covariance is the weighted covariance of the particle cloud.
     state_covariance = zeros(2, 2);
     for i = 1:N
         diff = particles(:, i) - state_estimate;
         state_covariance = state_covariance + weights(i) * (diff * diff');
     end
+    %% 6. Calculate Diagnostics for Logging
     
-    % 5. Calculate Diagnostics for Logging
-    % The innovation 'y' is the difference between the measurement and the
-    % a priori prediction 'z_pred' passed into the function. This is the correct
-    % value for statistical tests like NIS.
-    diagnostics.y = measurement - z_pred;
+    % a) Predict the measurement based on the FINAL state estimate
+    predicted_measurement = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, state_estimate(2), house_data.length_service_m, T_ambient_C) - state_estimate(1);
     
-    % We need to estimate the innovation variance 'P_zz'.
-    % This was already calculated outside, but for logging purposes we might
-    % want to re-calculate it or, more simply, pass it in. For now, let's
-    % use a simple approximation based on the new covariance.
-    [~, P_zz_approx, ~] = predict_measurement_pf(particles, house_data, T_ambient_C, R, [0;0], config); % Re-predict to get variance from posterior particles
-    diagnostics.P_zz = P_zz_approx; 
+    % b) Calculate the residual (innovation) 'y'
+    diagnostics.y = house_data.T_supply_C - predicted_measurement;
     
+    % c) Estimate the innovation variance 'P_zz'
+    % The uncertainty in the measurement prediction comes from two sources:
+    % 1. The uncertainty in the state estimate (propagated through the measurement function).
+    % 2. The measurement noise R.
+    % For simplicity, we can approximate this. A simple but effective way is to
+    % just use the measurement noise itself, as the particle cloud already
+    % accounts for state uncertainty. A more complex method would linearize
+    % around the mean, but that defeats the purpose of a PF.
+    % So, we'll use a pragmatic approximation.
+    diagnostics.P_zz = state_covariance(1,1) + R; % Simplified: uncertainty from offset + measurement noise
+    
+    % d) Populate other fields with NaNs since they don't exist in a PF
     diagnostics.K = [NaN; NaN];
-end
-
-% Helper function for resampling, can be inside the file or separate
-function indices = systematic_resample(weights)
-    N = length(weights);
-    indices = zeros(1, N);
-    C = cumsum(weights);
-    u1 = rand() / N;
-    i = 1;
-    for j = 1:N
-        u = u1 + (j - 1) / N;
-        while u > C(i)
-            i = i + 1;
-        end
-        indices(j) = i;
-    end
+    diagnostics.P_pred_diag = [NaN; NaN];
+    diagnostics.P_post_diag = diag(state_covariance); % We do have the posterior P
 end

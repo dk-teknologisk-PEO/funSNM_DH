@@ -1,6 +1,6 @@
 % initialize_pf_state.m (Corrected Version)
 
-function particles = initialize_pf_state(N, x_init, P_base)
+function particles = initialize_pf_state(N, x_init, P_base, config)
 %INITIALIZE_PF_STATE Creates the initial particle set for the filter.
 %   Uses rejection sampling to ensure the initial cloud respects physical
 %   constraints while maintaining the shape of the initial Gaussian guess.
@@ -14,8 +14,12 @@ function particles = initialize_pf_state(N, x_init, P_base)
 %       particles (2xN matrix): The initial cloud of valid particles.
 
     % Define physical state constraints
-    offset_min = -2.0; offset_max = 2.0;
-    U_min = 0.10;      U_max = 0.20;
+    offset_min = config.project.cutoff.offset_min;
+    offset_max = config.project.cutoff.offset_max;
+    U_min = config.project.cutoff.U_min;
+    U_max = config.project.cutoff.U_max;
+    % offset_min = -2.0; offset_max = 2.0;
+    % U_min = 0.10;      U_max = 0.20;
 
     particles = zeros(2, N);
     num_generated = 0;
