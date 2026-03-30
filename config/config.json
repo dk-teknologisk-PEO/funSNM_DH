@@ -20,6 +20,7 @@
       "weather": "data/weather/"
     },
     "cutoff": {
+      "alpha_min":0.2,
       "flow_cutoff": 40,
       "flow_cutoff_high": 100,
       "flow_cutoff_low": 50,

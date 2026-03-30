@@ -25,7 +25,8 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     P = state.P;
     Q_base_offset_var = state.Q(1,1);
     Q_base_U_var = state.Q(2,2);
-    
+    alpha_min = config.project.cutoff.alpha_min;
+
     n = length(x);
     
     % UKF parameters (can be tuned)
@@ -39,9 +40,15 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Q_base_offset_var = (0.001)^2;
     % Q_base_U_var      = (0.0001)^2;
     
+
     % To calculate sensitivity, we need the current best guess for the states
     current_offset = x(1);
     current_U      = x(2);
+
+    c = 4186;
+    flow_kg_s = house_data.flow_kg_h / 3600;
+    theta = (current_U * house_data.length_service_m) / (2 * c);
+    alpha_flow = (flow_kg_s - theta) / (flow_kg_s + theta);
     
     % --- Calculate Measurement Sensitivities ---
     % Sensitivity to offset is always -1. Its magnitude is 1.
@@ -68,7 +75,13 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Adding a small epsilon to avoid division by zero.
     epsilon = 1e-9;
     focus_on_U = impact_U / (impact_U + impact_offset + epsilon);
+    % normalize flow quality above threshold into [0,1]
+    flow_quality = max(0, min(1, (alpha_flow - alpha_min) / (1 - alpha_min)));
+    
+    % if flow is only barely valid, suppress U-updates
+    focus_on_U = focus_on_U * flow_quality;
     focus_on_offset = 1 - focus_on_U;
+
 
     % --- Scale Process Noise ---
     % If we should focus on the U-value, increase its process noise to allow

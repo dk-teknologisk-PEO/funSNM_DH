@@ -24,6 +24,7 @@ delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
 min_active_houses = config.project.initialization.min_active_houses;
 gate_N_sigma = config.project.initialization.innovation_gate_N_sigma ;
 max_innovation = config.project.initialization.max_innovation_C;
+alpha_min = config.project.cutoff.alpha_min;
 
 max_delta_T_change = config.project.initialization.max_delta_T_change_rate;
 
@@ -118,7 +119,7 @@ for network = networks
         for t = 1:length(timestamps)
 
             disp(t)
-            if mod(t,100)==0
+            if mod(t,10)==0
                 waitbar(t/(length(timestamps)*length(csac_ids))+(csac)/length(csac_ids),w,strcat("Running network. At timestep: ", string(t), "/", string(length(timestamps)),", csac: ",string(csac),"/",string(length(csac_ids)),", network: ", string(network)))
             end
             time = timestamps(t);
@@ -146,15 +147,18 @@ for network = networks
                 % if ~skip_timestep
                 house_id = houses_csac_ids(i);
                 house_data = current_data(current_data.house_id==house_id,:);
-                is_flow_sufficient = (house_data.flow_kg_h > config.project.cutoff.flow_cutoff);
+                [is_flow_sufficient_ukf, alpha_ukf, theta_ukf, min_flow_ukf_kg_h] = flow_validity_gate(house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
+
+                [is_flow_sufficient_pf, alpha_pf, theta_pf, min_flow_pf_kg_h] = flow_validity_gate(house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, alpha_min);
+                is_flow_sufficient_pf = is_flow_suffice;
                
                 
                 delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
                 delta_T_pf_sufficient = ((house_data.T_main_pf_C - current_T_soil_C) >= delta_T_gate_threshold);
 
                 % check if all gating conditions are fulfilled
-                can_update_ukf = is_csac_active && is_flow_sufficient && delta_T_ukf_sufficient;
-                can_update_pf = is_csac_active && is_flow_sufficient && delta_T_pf_sufficient;
+                can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
+                can_update_pf = is_csac_active && is_flow_sufficient_pf && delta_T_pf_sufficient;
                 
                 if can_update_ukf
                     if isnan(last_valid_T_main_ukf_C(i))
@@ -222,39 +226,28 @@ for network = networks
                     logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
                 end % end of pf-logger
             end
-            if log_ukf
-                logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
-            elseif t > 1
-                logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
-                logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
-            end
-            if log_pf
-                logger_pf = update_logger(logger_pf, t, i, time, pf_states{i}, diagnostics_pf);
-            elseif t > 1
-                logger_pf.state_estimates(:, i, t) = logger_pf.state_estimates(:, i, t-1);
-                logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
-
-            end
-        end
-        if error_meaning
-            mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
-            mean_pf_offsets = mean(pf_offsets, 'omitmissing');
-            for i=1:num_houses_csac
-                if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
-                    ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
-                end
-                if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
-                    pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
-                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
+            if error_meaning
+                mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
+                mean_pf_offsets = mean(pf_offsets, 'omitmissing');
+                for i=1:num_houses_csac
+                    if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
+                        ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
+                    end
+                    if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
+                        pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
+                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
+                    end
                 end
             end
-        end
+        end 
+        plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
+        plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
+        save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
+        save_logger_to_csv(logger_pf, output_folder_pf, strcat('pf_csac_', string(csac)));
     end
     % prev_houses = prev_houses + size(num_houses_csac);
     % --- Plot and Save Diagnostics for this CSAC ---
-    plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
-    plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
-    save_logger_to_csv(logger_ukf, g)
+   
 end
 % end % End of CSAC loop
 % end % End of network loop

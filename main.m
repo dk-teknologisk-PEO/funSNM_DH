@@ -3,7 +3,7 @@ clear all
 close all
 clc
 
-addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'config')
+addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
 
 % read config-file
 config = jsondecode(fileread("config.json"));
@@ -19,11 +19,12 @@ innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_of
 num_particles = config.project.initialization.pf.num_particles;
 
 % gating configuration
-flow_threshold = config.project.cutoff.flow_cutoff;
+absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
 delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
 min_active_houses = config.project.initialization.min_active_houses;
 gate_N_sigma = config.project.initialization.innovation_gate_N_sigma ;
 max_innovation = config.project.initialization.max_innovation_C;
+alpha_min = config.project.cutoff.alpha_min;
 
 max_delta_T_change = config.project.initialization.max_delta_T_change_rate;
 
@@ -127,18 +128,27 @@ for network = networks
             current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
             current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
             current_T_air_C = T_air_C((year(T_air_C.time)==year(time)) & (month(T_air_C.time)==month(time)) & (day(T_air_C.time)==day(time)),:).values;
-            num_active_houses = sum(current_data.flow_kg_h >= flow_threshold);
-            is_csac_active = (num_active_houses > config.project.initialization.min_active_houses);
-            skip_timestep = false;
-            if isempty(current_data) || isempty(current_T_soil_C)% || (current_T_air_C > air_temp_cutoff )
-                skip_timestep = true;
-            else
-                T_junction_ukf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_threshold, ukf_states);
-                current_data.T_main_ukf_C = T_junction_ukf_C;
-    
-                T_junction_pf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_threshold, pf_states);
-                current_data.T_main_pf_C = T_junction_pf_C;
+         
+
+            if isempty(current_data) || isempty(current_T_soil_C)
+                continue
             end
+
+            num_active_houses = sum(current_data.flow_kg_h >= absolute_flow_floor_kg_h);
+            is_csac_active = (num_active_houses >= config.project.initialization.min_active_houses);
+
+            T_junction_ukf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, ukf_states);
+            T_junction_pf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, pf_states);
+            
+            if all(isnan(T_junction_ukf_C)) || all(isnan(T_junction_pf_C))
+                continue
+            end
+
+            current_data.T_main_ukf_C = T_junction_ukf_C;
+            current_data.T_main_pf_C = T_junction_pf_C;
+            
+            logger_ukf.timestamps(t) = time;
+            logger_pf.timestamps(t) = time;
 
             for i = 1:num_houses_csac
                 log_ukf = false;
@@ -146,15 +156,22 @@ for network = networks
                 % if ~skip_timestep
                 house_id = houses_csac_ids(i);
                 house_data = current_data(current_data.house_id==house_id,:);
-                is_flow_sufficient = (house_data.flow_kg_h > config.project.cutoff.flow_cutoff);
+                if isempty(house_data)
+                    continue
+                end
+                [is_flow_sufficient_ukf, alpha_ukf, theta_ukf, min_flow_ukf_kg_h] = flow_validity_gate(house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
+                is_flow_sufficient_ukf = is_flow_sufficient_ukf && (house_data.flow_kg_h>absolute_flow_floor_kg_h);
+
+                [is_flow_sufficient_pf, alpha_pf, theta_pf, min_flow_pf_kg_h] = flow_validity_gate(house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, alpha_min);
+                is_flow_sufficient_pf = is_flow_sufficient_pf && (house_data.flow_kg_h>absolute_flow_floor_kg_h);
                
                 
                 delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
                 delta_T_pf_sufficient = ((house_data.T_main_pf_C - current_T_soil_C) >= delta_T_gate_threshold);
 
                 % check if all gating conditions are fulfilled
-                can_update_ukf = is_csac_active && is_flow_sufficient && delta_T_ukf_sufficient;
-                can_update_pf = is_csac_active && is_flow_sufficient && delta_T_pf_sufficient;
+                can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
+                can_update_pf = is_csac_active && is_flow_sufficient_pf && delta_T_pf_sufficient;
                 
                 if can_update_ukf
                     if isnan(last_valid_T_main_ukf_C(i))
@@ -178,14 +195,6 @@ for network = networks
                         end
                     end % end of stable ukf
                 end % end of valid ukf-scenario
-                
-                if can_update_pf
-                    if isnan(last_valid_T_main_pf_C(i))
-                        delta_T_main_change_pf = 0;
-                    else
-                        delta_T_main_change_pf = abs(house_data.T_main_pf_C - last_valid_T_main_pf_C(i));
-                    end
-                end
                 
                 if can_update_pf
                     if isnan(last_valid_T_main_pf_C(i))
