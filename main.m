@@ -185,12 +185,18 @@ for network = networks
                     % update UKF and particle filter
                         predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h,ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
-                        if abs(innovation) < ukf_innovation_gate(i)
+                        effective_ukf_gate = max(ukf_innovation_gate(i), 3.0);
+
+                        if csac == 1   % replace with the problematic csac id
+                            print_gate_summary(csac, time, house_id, can_update_ukf, innovation, ukf_innovation_gate(i), 3.0, 'UKF');
+                        end
+
+                        if abs(innovation) < effective_ukf_gate
                             [ukf_states{i}, diagnostics_ukf] = update_ukf_house(ukf_states{i}, house_data, current_T_soil_C, config);
                             ukf_offsets(i) = ukf_states{i}.x(1);
                             log_ukf = true;
                             last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                            ukf_innovation_gate(i)= max(0.7, sqrt(diagnostics_ukf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
+                            ukf_innovation_gate(i)= max(1, sqrt(diagnostics_ukf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
                             last_update_timestamp_ukf(i) = time;
                         end
                     end % end of stable ukf
@@ -207,14 +213,21 @@ for network = networks
                     if is_system_stable
                         predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
-                        if abs(innovation) < pf_innovation_gate(i)
+                        effective_pf_gate = max(pf_innovation_gate(i), 3.0);
+
+                        if csac == 1   % replace with the problematic csac id
+                            print_gate_summary(csac, time, house_id, can_update_pf, innovation, pf_innovation_gate(i), 3.0, 'PF');
+                        end
+
+                        
+                        if abs(innovation) < effective_pf_gate
                             [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
                             pf_states{i}.x = est_pf;
                             pf_states{i}.P = cov_pf;
                             pf_offsets(i) = pf_states{i}.x(1);
                             log_pf = true;
                             last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
-                            pf_innovation_gate(i) = max(0.7, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
+                            pf_innovation_gate(i) = max(1, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
                         end
                     end
                 end
