@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "time": {
       "start": "2018-01-03T00:00:00",
-      "end": "2018-01-31T23:59:59"
+      "end": "2018-03-31T23:59:59"
     },
     "location": {
       "city": "Aalborg"
@@ -46,7 +46,7 @@
       "min_active_houses": 3,
       "max_innovation_C": 1,
       "modify_mean_offset": true,
-      "max_delta_T_change_rate": 1,
+      "max_delta_T_change_rate": 3.0,
       "innovation_gate_N_sigma": 3.0,
       "hibernation_reset_threshold_hours": 720
     }

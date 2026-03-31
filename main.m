@@ -3,6 +3,12 @@ clear all
 close all
 clc
 
+% --- DEBUG SETTINGS ---
+debug_disable_stability_gate = true;
+debug_disable_mean_centering = true;
+debug_print_update_result = true;
+
+
 addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
 
 % read config-file
@@ -53,7 +59,7 @@ for network = networks
     prev_houses = 0;
 
     % loop through all cul-de-sacs in the network
-    for csac=csac_ids
+    for csac=1
         
         % extract relevant data for the csac
         U_csac = topology.pipe_parameters.csac_pipe.insulation_W_m_K; % U-value of the main pipe
@@ -173,17 +179,30 @@ for network = networks
                 can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
                 can_update_pf = is_csac_active && is_flow_sufficient_pf && delta_T_pf_sufficient;
                 
+                if csac == 1 && t <= 20
+                    print_full_gate_summary(csac, time, house_id, ...
+                    is_csac_active, is_flow_sufficient_ukf, delta_T_ukf_sufficient, ...
+                    house_data.T_main_ukf_C, current_T_soil_C, house_data.flow_kg_h, alpha_ukf, 'UKF');
+                end
+
                 if can_update_ukf
                     if isnan(last_valid_T_main_ukf_C(i))
                         delta_T_main_change_ukf = 0;
                     else
                         delta_T_main_change_ukf = abs(house_data.T_main_ukf_C-last_valid_T_main_ukf_C(i));
                     end
-                    is_system_stable = (delta_T_main_change_ukf < max_delta_T_change);
+
+                    if debug_disable_stability_gate
+                        is_system_stable = true;
+                    else
+                        is_system_stable = (delta_T_main_change_ukf < max_delta_T_change);
+                    end
+
                     % last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
                     if is_system_stable
-                    % update UKF and particle filter
+                        % update UKF and particle filter
                         predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h,ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
+                        
                         innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
                         effective_ukf_gate = max(ukf_innovation_gate(i), 3.0);
 
@@ -192,12 +211,28 @@ for network = networks
                         end
 
                         if abs(innovation) < effective_ukf_gate
+                            x_before = ukf_states{i}.x;
+                            P_before = ukf_states{i}.P;
+
                             [ukf_states{i}, diagnostics_ukf] = update_ukf_house(ukf_states{i}, house_data, current_T_soil_C, config);
-                            ukf_offsets(i) = ukf_states{i}.x(1);
-                            log_ukf = true;
-                            last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                            ukf_innovation_gate(i)= max(1, sqrt(diagnostics_ukf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
-                            last_update_timestamp_ukf(i) = time;
+                            if any(isnan(ukf_states{i}.x), 'all') || any(isnan(ukf_states{i}.P), 'all')
+                                warning('UKF returned NaN for house %d at %s', house_id, string(time));
+                            else
+
+                                ukf_offsets(i) = ukf_states{i}.x(1);
+                                log_ukf = true;
+                                last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
+                                last_update_timestamp_ukf(i) = time;
+                            end
+                            if isfield(diagnostics_ukf, 'P_zz') && isfinite(diagnostics_ukf.P_zz) && diagnostics_ukf.P_zz > 0
+                                ukf_innovation_gate(i) = max(1, sqrt(diagnostics_ukf.P_zz) * config.project.initialization.innovation_gate_N_sigma);
+                            else
+                                warning('Invalid UKF P_zz for house %d at %s', house_id, string(time));
+                            end
+                            if debug_print_update_result
+                                fprintf('UKF UPDATE | house %d | time %s | dx=[%.4f %.4f]\n', ...
+                                    house_id, string(time), ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
+                            end
                         end
                     end % end of stable ukf
                 end % end of valid ukf-scenario
@@ -208,7 +243,13 @@ for network = networks
                     else
                         delta_T_main_change_pf = abs(house_data.T_main_pf_C - last_valid_T_main_pf_C(i));
                     end
-                    is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
+
+                    if debug_disable_stability_gate
+                        is_system_stable = true;
+                    else
+                        is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
+                    end
+
                     % last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
                     if is_system_stable
                         predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
@@ -221,13 +262,29 @@ for network = networks
 
                         
                         if abs(innovation) < effective_pf_gate
+                            x_before = pf_states{i}.x;
+
                             [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
-                            pf_states{i}.x = est_pf;
-                            pf_states{i}.P = cov_pf;
-                            pf_offsets(i) = pf_states{i}.x(1);
-                            log_pf = true;
-                            last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
-                            pf_innovation_gate(i) = max(1, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
+                            
+                            if any(isnan(est_pf), 'all') || any(isnan(cov_pf), 'all')
+                                warning('PF returned NaN for house %d at %s', house_id, string(time));
+                            else
+                                pf_states{i}.x = est_pf;
+                                pf_states{i}.P = cov_pf;
+                                pf_offsets(i) = pf_states{i}.x(1);
+                                log_pf = true;
+                                last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
+
+                                if isfield(diagnostics_pf, 'P_zz') && isfinite(diagnostics_pf.P_zz) && diagnostics_pf.P_zz > 0
+                                    pf_innovation_gate(i) = max(1, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
+                                else
+                                    warning('Invalid PF P_zz for house %d at %s', house_id, string(time));
+                                end
+                                if debug_print_update_result
+                                    fprintf('PF UPDATE | house %d | time %s | dx=[%.4f %.4f]\n', ...
+                                        house_id, string(time), pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
+                                end
+                            end
                         end
                     end
                 end
@@ -244,7 +301,7 @@ for network = networks
                     logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
                 end % end of pf-logger
             end
-            if error_meaning
+            if error_meaning && ~debug_disable_mean_centering
                 mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
                 mean_pf_offsets = mean(pf_offsets, 'omitmissing');
                 for i=1:num_houses_csac
