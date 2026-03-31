@@ -153,15 +153,39 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     
     % Calculate Kalman Gain
     K = P_xz / P_zz; % In MATLAB, this is equivalent to P_xz * inv(P_zz)
+    K_gated = K; % Initialize the gated gain with the original gain
+    
+    % The 'focus_on_U' variable is already calculated earlier in this function (around line 70)
+    % It's a value from 0 to 1 indicating how much the measurement is influenced by the U-value.
+    
+    % We will create "soft" gates. If focus_on_U is high, we trust the U-value update more.
+    % If focus_on_U is low, we trust the offset update more.
+    % The gate_sharpness parameter controls how aggressively we switch between the two.
+    gate_sharpness = 10; 
+    
+    % A sigmoid function provides a smooth transition.
+    u_update_gain      = 1 / (1 + exp(-gate_sharpness * (focus_on_U - 0.5)));
+    offset_update_gain = 1 - u_update_gain;
+
+    % Apply these gains to the respective elements of the Kalman Gain vector.
+    % K(1) corresponds to the offset state.
+    % K(2) corresponds to the U-value state.
+    K_gated(1) = K(1) * offset_update_gain;
+    K_gated(2) = K(2) * u_update_gain;
+    % --- END OF NEW CODE ---
     
     % Calculate measurement residual (innovation)
     y = house_data.T_supply_C - z_pred;
     
-    % Update state and covariance
-    x_new = x_pred + K * y;
-    P_new = P_pred - K * P_zz * K';
+    % Update state and covariance -- USE THE GATED GAIN
+    x_new = x_pred + K_gated * y;
+    P_new = P_pred - K_gated * P_zz * K_gated';
     P_new = (P_new + P_new') / 2; % ensure symmetry
+    P_new(P_new < 0) = 1e-9;  
     
+    % store the state before clamping
+    x_unclamped = x_new;
+
     % Apply physical constraints to the state
     % Define the boundaries for the states
     offset_min = config.project.cutoff.offset_min;%-2.0; 
@@ -173,6 +197,28 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     x_new(1) = max(min(x_new(1), offset_max), offset_min); % Clamp offset
     x_new(2) = max(min(x_new(2), U_max), U_min);       % Clamp U-value
 
+    offset_is_clamped = (x_new(1) ~= x_unclamped(1));
+    U_is_clamped = (x_new(2) ~= x_unclamped(2));
+
+     % If the offset is stuck at a boundary, artificially increase its uncertainty.
+    % This makes the filter more receptive to future corrections.
+    if offset_is_clamped
+        inflation_factor = 1.1; % Increase uncertainty by 10%
+        P_new(1,1) = P_new(1,1) * inflation_factor;
+        % We can also slightly inflate the cross-covariance terms
+        P_new(1,2) = P_new(1,2) * inflation_factor;
+        P_new(2,1) = P_new(2,1) * inflation_factor;
+    end
+    
+    % Do the same if the U-value gets stuck (good practice)
+    if U_is_clamped
+        inflation_factor = 1.1; % Increase uncertainty by 10%
+        P_new(2,2) = P_new(2,2) * inflation_factor;
+        P_new(1,2) = P_new(1,2) * inflation_factor;
+        P_new(2,1) = P_new(2,1) * inflation_factor;
+    end
+
+
     %% 6. Pack Results into State Struct
     state.x = x_new;
     state.P = P_new;
@@ -180,7 +226,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
 
     diagnostics.y = y;
     diagnostics.P_zz = P_zz;
-    diagnostics.K = K;
+    diagnostics.K = K_gated;
     diagnostics.P_pred_diag = diag(P_pred);
     diagnostics.P_post_diag = diag(P_new);
 end

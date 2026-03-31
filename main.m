@@ -6,7 +6,7 @@ clc
 % --- DEBUG SETTINGS ---
 debug_disable_stability_gate = true;
 debug_disable_mean_centering = true;
-debug_print_update_result = false;
+debug_print_update_result = true;
 
 
 addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
