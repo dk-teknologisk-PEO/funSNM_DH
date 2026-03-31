@@ -22,6 +22,8 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
     % Each particle evolves according to the process model (a random walk).
     % We add noise sampled from the process noise covariance Q.
     process_noise = chol(Q)' * randn(2, N);
+    lambda_offset = 0.005;
+    particles(1,:) = (1-lambda_offset)*particles(1,:);
     particles = particles + process_noise;
 
     %% 2. Apply State Constraints (Project particles back into valid range)

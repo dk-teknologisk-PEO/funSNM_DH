@@ -66,7 +66,7 @@ for network = networks
         houses_csac = ([topology.houses.cul_de_sac_id]==csac);
         topology_csac = topology.houses(houses_csac);
         num_houses_csac = sum(houses_csac);
-        houses_csac_ids = [topology.houses(houses_csac).id];
+        houses_csac_ids = sort([topology.houses(houses_csac).id]);
         true_offset = zeros([size(topology_csac),1]);
 
         % create a table with reference-values (only possible when there is
@@ -132,6 +132,8 @@ for network = networks
 
             % extract data from this timestep
             current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
+            current_data = sortrows(current_data, 'house_id');
+
             current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
             current_T_air_C = T_air_C((year(T_air_C.time)==year(time)) & (month(T_air_C.time)==month(time)) & (day(T_air_C.time)==day(time)),:).values;
          
