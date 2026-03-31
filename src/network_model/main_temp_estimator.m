@@ -6,7 +6,8 @@ function T_main_sq = main_temp_estimator(parameters, current_data, current_data_
 % parameters(1) = T_start_C (inlet temperature to optimize)    
     
     if nargin == 5 || isempty(T_start_C) || isnan(T_start_C)
-        T_start_C = parameters;
+        T_start_C = parameters(1);
+        master_offset = parameters(2);
     end
     
         
@@ -32,7 +33,10 @@ function T_main_sq = main_temp_estimator(parameters, current_data, current_data_
         house_id = current_data.house_id(t);
 
         if ismember(house_id, current_data_sub.house_id)
-            ref_T_main = current_data.T_main_C(t);
+            % The reference T_main is back-calculated from the measured T_supply.
+            % If all meters have a positive offset, the back-calculated T_main will be too high.
+            % We adjust it by the master_offset we are trying to find.
+            ref_T_main = current_data.T_main_C(t) - master_offset;
             if isfinite(ref_T_main)
                 dT(t) = temp(t) - ref_T_main;
             end

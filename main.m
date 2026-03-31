@@ -6,7 +6,7 @@ clc
 % --- DEBUG SETTINGS ---
 debug_disable_stability_gate = true;
 debug_disable_mean_centering = true;
-debug_print_update_result = true;
+debug_print_update_result = false;
 
 
 addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
@@ -59,7 +59,7 @@ for network = networks
     prev_houses = 0;
 
     % loop through all cul-de-sacs in the network
-    for csac=1
+    for csac=csac_ids
         
         % extract relevant data for the csac
         U_csac = topology.pipe_parameters.csac_pipe.insulation_W_m_K; % U-value of the main pipe
@@ -145,8 +145,8 @@ for network = networks
             num_active_houses = sum(current_data.flow_kg_h >= absolute_flow_floor_kg_h);
             is_csac_active = (num_active_houses >= config.project.initialization.min_active_houses);
 
-            T_junction_ukf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, ukf_states);
-            T_junction_pf_C = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, pf_states);
+            [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, ukf_states);
+            [T_junction_pf_C, pf_master_offset] = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, pf_states);
             
             if all(isnan(T_junction_ukf_C)) || all(isnan(T_junction_pf_C))
                 continue
@@ -208,9 +208,9 @@ for network = networks
                         innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
                         effective_ukf_gate = max(ukf_innovation_gate(i), 3.0);
 
-                        if csac == 1   % replace with the problematic csac id
-                            print_gate_summary(csac, time, house_id, can_update_ukf, innovation, ukf_innovation_gate(i), 3.0, 'UKF');
-                        end
+                        % if csac == 1   % replace with the problematic csac id
+                        %     print_gate_summary(csac, time, house_id, can_update_ukf, innovation, ukf_innovation_gate(i), 3.0, 'UKF');
+                        % end
 
                         if abs(innovation) < effective_ukf_gate
                             x_before = ukf_states{i}.x;
@@ -258,10 +258,6 @@ for network = networks
                         innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
                         effective_pf_gate = max(pf_innovation_gate(i), 3.0);
 
-                        if csac == 1   % replace with the problematic csac id
-                            print_gate_summary(csac, time, house_id, can_update_pf, innovation, pf_innovation_gate(i), 3.0, 'PF');
-                        end
-
                         
                         if abs(innovation) < effective_pf_gate
                             x_before = pf_states{i}.x;
@@ -290,6 +286,7 @@ for network = networks
                         end
                     end
                 end
+
                 if log_ukf
                     logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
                 elseif t > 1
@@ -303,6 +300,19 @@ for network = networks
                     logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
                 end % end of pf-logger
             end
+
+            if ~isnan(ukf_master_offset)
+                for i=1:num_houses_csac
+                    ukf_states{i}.x(1) = ukf_states{i}.x(1) - ukf_master_offset;
+                end
+            end
+            if ~isnan(pf_master_offset)
+                for i=1:num_houses_csac
+                    pf_states{i}.x(1) = pf_states{i}.x(1)-pf_master_offset;
+                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - pf_master_offset;
+                end
+            end
+
             if error_meaning && ~debug_disable_mean_centering
                 mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
                 mean_pf_offsets = mean(pf_offsets, 'omitmissing');
