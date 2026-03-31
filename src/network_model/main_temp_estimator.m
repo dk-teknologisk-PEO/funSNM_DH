@@ -1,42 +1,48 @@
-% function for finding the "goodness" of the temperature profile along the
-% main pipe
-
-function T_main_sq = main_temp_estimator(parameters, current_data,current_data_sub, current_T_soil_C, U_main, T_start_C)
+function T_main_sq = main_temp_estimator(parameters, current_data, current_data_sub, current_T_soil_C, U_main, T_start_C)
+% MAIN_TEMP_ESTIMATOR Cost function for fminsearch.
+% Computes the sum of squared differences between the forward-simulated
+% main pipe temperature profile and the back-calculated T_main from meters.
+%
+% parameters(1) = T_start_C (inlet temperature to optimize)    
     
+    if nargin == 5 || isempty(T_start_C) || isnan(T_start_C)
+        T_start_C = parameters(1);
+        master_offset = parameters(2);
+    end
     
-    T_start_C = parameters;
+        
+    % Segment lengths along main pipe
+    xDiff = current_data.x_pos_m;
+    xDiff(2:end) = diff(xDiff);
+    
+    % Cumulative flow (total flow in each main pipe segment)
+    Q_main_total = cumsum(current_data.flow_kg_h, 1, 'reverse');
     
     % move expected temperatures in the main pipe (from utility meter
     % measurements) into seperate vector for better readability 
     temperatures = current_data_sub.T_supply_C;
-        
-    % find distance between service pipe connections at main pipe
-    xDiff = current_data.x_pos_m;
-    xDiff(2:end) = diff(xDiff);
     
-    % xDiff = nan(size(xPos));
-    % xDiff(1) = xPos(1);
-    % xDiff(2:end) = xPos(2:end)-xPos(1:end-1);
-
-    
-    if ~isnan(T_start_C)
-        T_start_C = T_start_C;
-    end
-
-    % find flow in different segments of the main pipe
-    Q_main_total=cumsum(current_data.flow_kg_h,1,"reverse");
-        
-    % find temperature at entrance to each subpipe
-    temp = nan(size(current_data.flow_kg_h));
-    dT = zeros(size(current_data.flow_kg_h));
+    % Forward simulate temperature along main pipe
+    num_houses = size(current_data, 1);
+    temp = nan(num_houses, 1);
+    dT = zeros(num_houses, 1);
     T_prev = T_start_C;
-    for t = 1:length(temp)
-        house_id = current_data(t,:).house_id;
-        temp(t) = get_supply_temp(T_prev,Q_main_total(t),U_main,xDiff(t),current_T_soil_C);
-        if ismember(house_id,current_data_sub.house_id) %|| ((t==length(temp)) & (~isnan(T_end_measured))) %   
-            dT(t) = temp(t)-current_data(t,:).T_main_C; 
-            % temperatures(1)=[];
+
+    for t = 1:num_houses
+        temp(t) = get_supply_temp(T_prev, Q_main_total(t), U_main, xDiff(t), current_T_soil_C);
+        house_id = current_data.house_id(t);
+
+        if ismember(house_id, current_data_sub.house_id)
+            % The reference T_main is back-calculated from the measured T_supply.
+            % If all meters have a positive offset, the back-calculated T_main will be too high.
+            % We adjust it by the master_offset we are trying to find.
+            ref_T_main = current_data.T_main_C(t) - master_offset;
+            if isfinite(ref_T_main)
+                dT(t) = temp(t) - ref_T_main;
+            end
         end
         T_prev = temp(t);
     end
-    T_main_sq = dT'*dT;
+
+    T_main_sq = dT' * dT;
+end

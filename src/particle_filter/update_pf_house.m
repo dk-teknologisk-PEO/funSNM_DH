@@ -22,6 +22,8 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
     % Each particle evolves according to the process model (a random walk).
     % We add noise sampled from the process noise covariance Q.
     process_noise = chol(Q)' * randn(2, N);
+    lambda_offset = 0.005;
+    particles(1,:) = (1-lambda_offset)*particles(1,:);
     particles = particles + process_noise;
 
     %% 2. Apply State Constraints (Project particles back into valid range)
@@ -53,15 +55,17 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
         % Calculate the probability of the actual measurement under a Gaussian assumption
         % This is the core of the weighting step.
         error = measurement - predicted_measurement;
-        likelihoods(i) = (1 / sqrt(2 * pi * R)) * exp(-0.5 * error^2 / R);
+        log_likelihoods(i) = -0.5 * error^2 / R;
     end
     
-    % Update the weights by multiplying with the new likelihoods
-    weights = weights .* likelihoods;
+    % Log-sum-exp trick for numerical stability
+    max_log_lik = max(log_likelihoods);
+    log_weights = log_likelihoods - max_log_lik;  % shift
+    weights = exp(log_weights);
     
     % Normalize the weights so they sum to 1
     sum_weights = sum(weights);
-    if sum_weights > 1e-15 % Avoid division by zero
+    if sum_weights > 1e-300 % Avoid division by zero
         weights = weights / sum_weights;
     else
         % All particles are very unlikely. Re-initialize to avoid collapse.
@@ -78,6 +82,7 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
         % Perform systematic resampling (a low-variance method)
         indices = zeros(1, N);
         C = cumsum(weights);
+        C(end) = 1.0;  % ensure exact sum for numerical safety
         u1 = rand() / N;
         i = 1;
         for j = 1:N
@@ -114,24 +119,17 @@ function [particles, state_estimate, state_covariance, diagnostics] = update_pf_
     %% 6. Calculate Diagnostics for Logging
     
     % a) Predict the measurement based on the FINAL state estimate
-    predicted_measurement = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, state_estimate(2), house_data.length_service_m, T_ambient_C) - state_estimate(1);
+    predicted_measurements = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, state_estimate(2), house_data.length_service_m, T_ambient_C) - state_estimate(1);
     
     % b) Calculate the residual (innovation) 'y'
-    diagnostics.y = house_data.T_supply_C - predicted_measurement;
-    
-    % c) Estimate the innovation variance 'P_zz'
-    % The uncertainty in the measurement prediction comes from two sources:
-    % 1. The uncertainty in the state estimate (propagated through the measurement function).
-    % 2. The measurement noise R.
-    % For simplicity, we can approximate this. A simple but effective way is to
-    % just use the measurement noise itself, as the particle cloud already
-    % accounts for state uncertainty. A more complex method would linearize
-    % around the mean, but that defeats the purpose of a PF.
-    % So, we'll use a pragmatic approximation.
-    diagnostics.P_zz = state_covariance(1,1) + R; % Simplified: uncertainty from offset + measurement noise
-    
-    % d) Populate other fields with NaNs since they don't exist in a PF
+    z_mean = sum(weights .* predicted_measurements);
+    P_zz_state = sum(weights .* (predicted_measurements - z_mean).^2);
+    P_zz = P_zz_state + R;
+
+    diagnostics.y = measurement - z_mean;
+    diagnostics.P_zz = P_zz;
     diagnostics.K = [NaN; NaN];
     diagnostics.P_pred_diag = [NaN; NaN];
-    diagnostics.P_post_diag = diag(state_covariance); % We do have the posterior P
+    diagnostics.P_post_diag = diag(state_covariance);
+    diagnostics.N_eff = N_eff;
 end
