@@ -48,7 +48,9 @@
       "modify_mean_offset": true,
       "max_delta_T_change_rate": 1.5,
       "innovation_gate_N_sigma": 2.0,
-      "hibernation_reset_threshold_hours": 720
+      "hibernation_reset_threshold_hours": 720,
+      "master_offset_learning_rate": 0.1,
+      "master_offset_min_threshold": 0.05
     }
   }
 }

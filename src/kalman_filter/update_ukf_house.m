@@ -2,26 +2,9 @@
 
 function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, config)
 %UPDATE_UKF_HOUSE Performs a UKF update for a single service pipe/meter.
-%   This function estimates the meter temperature offset and the service
-%   pipe U-value, using a flow-dependent process noise model.
-%
-%   Args:
-%       state (struct): A struct containing the current filter state:
-%                       .x (2x1 vector): [temp_offset; U_value]
-%                       .P (2x2 matrix): State covariance
-%                       .R (scalar): Measurement noise variance
-%       house_data (table row): A single row of meter data containing:
-%                               .flow (scalar): Flow in kg/h
-%                               .tempHigh (scalar): Measured supply temp
-%                               .subPipe (scalar): Service pipe length
-%       T_main (scalar): Estimated main pipe temperature at the junction.
-%       T_ambient (scalar): Ambient (soil) temperature.
-%
-%   Returns:
-%       state (struct): The updated filter state struct.
 
     %% 1. Unpack State and Define Constants
-    x = state.x; % State: [offset_temp; U_value]
+    x = state.x;
     P = state.P;
     Q_base_offset_var = state.Q(1,1);
     Q_base_U_var = state.Q(2,2);
@@ -29,19 +12,12 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
 
     n = length(x);
     
-    % UKF parameters (can be tuned)
+    % UKF tuning parameters
     alpha = 1e-3;
     beta = 2;
     kappa = 0;
 
     %% 2. Sensitivity-Based Dynamic Process Noise (Q)
-    
-    % Base process noise for slow drift
-    % Q_base_offset_var = (0.001)^2;
-    % Q_base_U_var      = (0.0001)^2;
-    
-
-    % To calculate sensitivity, we need the current best guess for the states
     current_offset = x(1);
     current_U      = x(2);
 
@@ -51,91 +27,97 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     alpha_flow = (flow_kg_s - theta) / (flow_kg_s + theta);
     
     % --- Calculate Measurement Sensitivities ---
-    % Sensitivity to offset is always -1. Its magnitude is 1.
     sensitivity_offset = 1.0;
     
-    % Numerically approximate the sensitivity to U-value using a small perturbation
-    dU = 0.001; % A small change in U-value
-    temp_nominal = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, current_U, house_data.length_service_m, T_soil_C);
-    temp_perturbed = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, current_U + dU, house_data.length_service_m, T_soil_C);
+    dU = 0.001;
+    temp_nominal  = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, ...
+        current_U, house_data.length_service_m, T_soil_C);
+    temp_perturbed = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, ...
+        current_U + dU, house_data.length_service_m, T_soil_C);
     sensitivity_U = abs((temp_perturbed - temp_nominal) / dU);
     
     % --- Normalize sensitivities by state uncertainty ---
-    % This gives the expected change in measurement per standard deviation of the state.
-    std_offset = sqrt(P(1,1));
-    std_U      = sqrt(P(2,2));
+    std_offset = sqrt(max(P(1,1), 1e-12));
+    std_U      = sqrt(max(P(2,2), 1e-12));
     
     impact_offset = sensitivity_offset * std_offset;
     impact_U      = sensitivity_U * std_U;
     
     % --- Define Focus Factor ---
-    % A value from 0 to 1.
-    % focus_on_U = 1 means the measurement is dominated by U-value effects.
-    % focus_on_U = 0 means the measurement is dominated by offset effects.
-    % Adding a small epsilon to avoid division by zero.
     epsilon = 1e-9;
     focus_on_U = impact_U / (impact_U + impact_offset + epsilon);
-    % normalize flow quality above threshold into [0,1]
+
+    % Suppress U-updates when flow is barely valid
     flow_quality = max(0, min(1, (alpha_flow - alpha_min) / (1 - alpha_min)));
-    
-    % if flow is only barely valid, suppress U-updates
     focus_on_U = focus_on_U * flow_quality;
     focus_on_offset = 1 - focus_on_U;
 
-
     % --- Scale Process Noise ---
-    % If we should focus on the U-value, increase its process noise to allow
-    % the filter to update it more aggressively.
-    noise_scaler = 100; % Amplifies the effect. Tune this parameter.
+    % REDUCED from 100 to 10: noise_scaler=100 caused Kalman gains that
+    % were far too large, producing offset jumps of 0.3-0.5 per timestep
+    % from innovations of only ~0.2. The scaler only needs to create a 
+    % contrast between the two states, not massively inflate total noise.
+    noise_scaler = 10;
     
     Q_offset_var = Q_base_offset_var * (1 + noise_scaler * focus_on_offset);
     Q_U_var      = Q_base_U_var      * (1 + noise_scaler * focus_on_U);
     
     Q = diag([Q_offset_var, Q_U_var]);    
 
-
-
     %% 3. UKF Prediction Step
-    % For this problem, the state transition function is the identity,
-    % as the parameters are assumed to be near-constant.
-    % x_predicted = x;
-    % P_predicted = P + Q;
-    
-    % We generate sigma points directly from the predicted distribution
-    % to keep the formulation clean and standard.
-    lambda_offset = 0.005; % gentle mean reversion per timestep
-    x_pred = x; % Our process model is x_k+1 = x_k
-    x_pred(1) = (1-lambda_offset)*x(1);
+    lambda_offset = 0.005;
+    x_pred = x;
+    x_pred(1) = (1 - lambda_offset) * x(1);
 
     P_pred = P + Q;
 
-    alpha_forget = config.project.initialization.ukf.alpha_forget; % Use a small value since updates are sparse (gated)
+    alpha_forget = config.project.initialization.ukf.alpha_forget;
     P_pred = alpha_forget * P_pred; 
+
+    % --- Ensure P_pred is well-conditioned ---
+    P_pred = (P_pred + P_pred') / 2;
+    min_var = 1e-10;
+    for idx = 1:n
+        if P_pred(idx, idx) < min_var
+            P_pred(idx, idx) = min_var;
+        end
+    end
 
     %% 4. UKF Measurement Update Step
     
-    % Generate sigma points from the *a priori* (predicted) distribution
     [sigma_points, Wm, Wc] = generate_sigma_points(x_pred, P_pred, alpha, beta, kappa);
     
-    % Propagate sigma points through the (nonlinear) measurement function h(x)
-    % h(x) = T_supply_at_meter = T_service_out - offset
     num_sigma = size(sigma_points, 2);
     Z_sigma = zeros(1, num_sigma);
     for i = 1:num_sigma
         sigma_offset = sigma_points(1, i);
         sigma_U      = sigma_points(2, i);
         
-        % Predict the temperature drop in the service pipe
-        T_service_out = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, sigma_U, house_data.length_service_m, T_soil_C);
+        % Clamp sigma-point U-values to prevent nonsensical results
+        sigma_U = max(sigma_U, config.project.cutoff.U_min * 0.5);
+        sigma_U = min(sigma_U, config.project.cutoff.U_max * 2.0);
         
-        % Predicted measurement is the pipe outlet temp minus the offset
+        T_service_out = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, ...
+            sigma_U, house_data.length_service_m, T_soil_C);
+        
         Z_sigma(i) = T_service_out - sigma_offset;
     end
     
-    % Calculate the predicted measurement mean
+    % Check for NaN in propagated sigma points
+    if any(isnan(Z_sigma))
+        warning('NaN detected in propagated sigma points. Skipping update.');
+        diagnostics.y = NaN;
+        diagnostics.P_zz = NaN;
+        diagnostics.K = [NaN; NaN];
+        diagnostics.P_pred_diag = diag(P_pred);
+        diagnostics.P_post_diag = diag(state.P);
+        return;
+    end
+    
+    % Predicted measurement mean
     z_pred = sum(Wm .* Z_sigma, 2);
     
-    % Calculate innovation covariance (P_zz) and cross-covariance (P_xz)
+    % Innovation covariance (P_zz) and cross-covariance (P_xz)
     P_zz = 0;
     P_xz = zeros(n, 1);
     for i = 1:num_sigma
@@ -149,80 +131,113 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Add measurement noise
     P_zz = P_zz + state.R;
     
+    % Guard against degenerate P_zz
+    if P_zz < 1e-12
+        P_zz = state.R;
+    end
+
     %% 5. State and Covariance Update
     
-    % Calculate Kalman Gain
-    K = P_xz / P_zz; % In MATLAB, this is equivalent to P_xz * inv(P_zz)
-    K_gated = K; % Initialize the gated gain with the original gain
+    % Kalman Gain
+    K = P_xz / P_zz;
+    K_gated = K;
     
-    % The 'focus_on_U' variable is already calculated earlier in this function (around line 70)
-    % It's a value from 0 to 1 indicating how much the measurement is influenced by the U-value.
-    
-    % We will create "soft" gates. If focus_on_U is high, we trust the U-value update more.
-    % If focus_on_U is low, we trust the offset update more.
-    % The gate_sharpness parameter controls how aggressively we switch between the two.
+    % --- Soft Kalman gain gating via sigmoid ---
     gate_sharpness = 10; 
-    
-    % A sigmoid function provides a smooth transition.
     u_update_gain      = 1 / (1 + exp(-gate_sharpness * (focus_on_U - 0.5)));
     offset_update_gain = 1 - u_update_gain;
 
-    % Apply these gains to the respective elements of the Kalman Gain vector.
-    % K(1) corresponds to the offset state.
-    % K(2) corresponds to the U-value state.
     K_gated(1) = K(1) * offset_update_gain;
     K_gated(2) = K(2) * u_update_gain;
-    % --- END OF NEW CODE ---
     
-    % Calculate measurement residual (innovation)
+    % Innovation
     y = house_data.T_supply_C - z_pred;
     
-    % Update state and covariance -- USE THE GATED GAIN
-    x_new = x_pred + K_gated * y;
-    P_new = P_pred - K_gated * P_zz * K_gated';
-    P_new = (P_new + P_new') / 2; % ensure symmetry
-    P_new(P_new < 0) = 1e-9;  
+    % --- Compute raw state update ---
+    dx = K_gated * y;
     
-    % store the state before clamping
+    % --- MAXIMUM STEP SIZE LIMITER ---
+    % Prevents any single update from making an excessively large change.
+    % This is the last line of defense against outliers that pass the gates.
+    max_step_offset = 0.15; % Max offset change per update [°C]
+    max_step_U      = 0.01; % Max U-value change per update [W/m/K]
+    
+    if abs(dx(1)) > max_step_offset
+        dx(1) = sign(dx(1)) * max_step_offset;
+    end
+    if abs(dx(2)) > max_step_U
+        dx(2) = sign(dx(2)) * max_step_U;
+    end
+    
+    % Update state with the (possibly limited) step
+    x_new = x_pred + dx;
+    
+    % Covariance update using the original (unlimited) K_gated
+    % We still use K_gated (not the limited step) for covariance, because
+    % if we limited the step, we want P to remain larger (reflecting that
+    % we didn't fully incorporate the measurement information).
+    P_new = P_pred - K_gated * P_zz * K_gated';
+    P_new = (P_new + P_new') / 2;
+    
+    % --- Only clamp DIAGONAL elements (variances must be positive) ---
+    for idx = 1:n
+        if P_new(idx, idx) < 1e-9
+            P_new(idx, idx) = 1e-9;
+        end
+    end
+    
+    % --- Verify positive-definiteness ---
+    [~, flag] = chol(P_new);
+    if flag ~= 0
+        [V, D] = eig(P_new);
+        D = max(D, 1e-9 * eye(n));
+        P_new = V * D * V';
+        P_new = (P_new + P_new') / 2;
+    end
+    
+    % --- If the step was limited, inflate covariance to reflect that ---
+    % --- we didn't fully use the measurement                        ---
+    step_was_limited = (abs(K_gated(1) * y) > max_step_offset) || ...
+                       (abs(K_gated(2) * y) > max_step_U);
+    if step_was_limited
+        % Don't reduce P as much — add back some of the innovation info
+        P_new = P_new + 0.5 * Q;  % Partial inflation
+    end
+
+    % Store state before clamping
     x_unclamped = x_new;
 
-    % Apply physical constraints to the state
-    % Define the boundaries for the states
-    offset_min = config.project.cutoff.offset_min;%-2.0; 
-    offset_max = config.project.cutoff.offset_max;%2.0;
-    U_min = config.project.cutoff.U_min;%0.08; 
-    U_max = config.project.cutoff.U_max;%0.20;
+    % --- Physical constraints ---
+    offset_min = config.project.cutoff.offset_min;
+    offset_max = config.project.cutoff.offset_max;
+    U_min = config.project.cutoff.U_min;
+    U_max = config.project.cutoff.U_max;
     
-    % Clamp the estimated states to stay within the physical boundaries
-    x_new(1) = max(min(x_new(1), offset_max), offset_min); % Clamp offset
-    x_new(2) = max(min(x_new(2), U_max), U_min);       % Clamp U-value
+    x_new(1) = max(min(x_new(1), offset_max), offset_min);
+    x_new(2) = max(min(x_new(2), U_max), U_min);
 
     offset_is_clamped = (x_new(1) ~= x_unclamped(1));
     U_is_clamped = (x_new(2) ~= x_unclamped(2));
 
-     % If the offset is stuck at a boundary, artificially increase its uncertainty.
-    % This makes the filter more receptive to future corrections.
+    % --- Covariance inflation at boundaries ---
     if offset_is_clamped
-        inflation_factor = 1.1; % Increase uncertainty by 10%
+        inflation_factor = 1.1;
         P_new(1,1) = P_new(1,1) * inflation_factor;
-        % We can also slightly inflate the cross-covariance terms
-        P_new(1,2) = P_new(1,2) * inflation_factor;
-        P_new(2,1) = P_new(2,1) * inflation_factor;
+        P_new(1,2) = P_new(1,2) * sqrt(inflation_factor);
+        P_new(2,1) = P_new(2,1) * sqrt(inflation_factor);
     end
     
-    % Do the same if the U-value gets stuck (good practice)
     if U_is_clamped
-        inflation_factor = 1.1; % Increase uncertainty by 10%
+        inflation_factor = 1.1;
         P_new(2,2) = P_new(2,2) * inflation_factor;
-        P_new(1,2) = P_new(1,2) * inflation_factor;
-        P_new(2,1) = P_new(2,1) * inflation_factor;
+        P_new(1,2) = P_new(1,2) * sqrt(inflation_factor);
+        P_new(2,1) = P_new(2,1) * sqrt(inflation_factor);
     end
 
-
-    %% 6. Pack Results into State Struct
+    %% 6. Pack Results
     state.x = x_new;
     state.P = P_new;
-    state.y = y; % Store residual for diagnostics
+    state.y = y;
 
     diagnostics.y = y;
     diagnostics.P_zz = P_zz;
@@ -230,4 +245,3 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     diagnostics.P_pred_diag = diag(P_pred);
     diagnostics.P_post_diag = diag(P_new);
 end
-
