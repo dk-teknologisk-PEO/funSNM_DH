@@ -1,4 +1,4 @@
-%%% getMainTemp.m %%%
+    %%% getMainTemp.m %%%
 % function, taking in an array of meter temperatures and -flow rates and
 % finding the temperature in the main pipe.
 % The temperatures must be in °C and the flow in ltr/hour. The meter
@@ -17,11 +17,4 @@ function T_main = get_main_temp(T_supply_C, flow_kg_h,U ,L_pipe_m ,T_soil_C)
     B = U.*L_pipe_m;
     nom = T_supply_C.*(c*flow_kg_s + (B./2)) - B.*T_soil_C;
     denom = c*flow_kg_s-(B./2);
-
-    % Protect against near-zero or negative denominator
-    % This happens when flow is too low relative to heat loss
-    bad = abs(denom) < 1e-6;
-    denom(bad) = NaN;  % Will produce NaN instead of Inf
-
     T_main = nom./denom;
-end

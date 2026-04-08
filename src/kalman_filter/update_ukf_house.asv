@@ -106,7 +106,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     x_pred = x; % Our process model is x_k+1 = x_k
     P_pred = P + Q;
 
-    alpha_forget = config.project.initialization.ukf.alpha_forget; % Use a small value since updates are sparse (gated)
+    alpha_forget = 1.001; % Use a small value since updates are sparse (gated)
     P_pred = alpha_forget * P_pred; 
 
     %% 4. UKF Measurement Update Step
@@ -157,7 +157,6 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Update state and covariance
     x_new = x_pred + K * y;
     P_new = P_pred - K * P_zz * K';
-    P_new = (P_new + P_new') / 2; % ensure symmetry
     
     % Apply physical constraints to the state
     % Define the boundaries for the states

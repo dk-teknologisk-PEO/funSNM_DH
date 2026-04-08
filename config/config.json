@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "time": {
       "start": "2018-01-03T00:00:00",
-      "end": "2018-01-31T23:59:59"
+      "end": "2018-03-31T23:59:59"
     },
     "location": {
       "city": "Aalborg"
@@ -15,13 +15,13 @@
       "datasets": [1]
     },
     "paths": {
-      "topology": "C:/Users/PEO/Documents/GitHub/DH simulation/network_topologies",
-      "data": "C:/Users/PEO/Documents/GitHub/DH simulation/results",
+      "topology": "C:/Users/PEO/Documents/GitHub/funSNM_data/network_topologies",
+      "data": "C:/Users/PEO/Documents/GitHub/funSNM_data/results",
       "weather": "data/weather/"
     },
     "cutoff": {
       "alpha_min":0.2,
-      "flow_cutoff": 20,
+      "flow_cutoff": 40,
       "flow_cutoff_high": 100,
       "flow_cutoff_low": 50,
       "delta_T_gate_threshold": 30,
@@ -44,9 +44,9 @@
       },
       "max_air_temperature": 50,
       "min_active_houses": 3,
-      "max_innovation_C": 1,
+      "max_innovation_C": 3,
       "modify_mean_offset": true,
-      "max_delta_T_change_rate": 3.0,
+      "max_delta_T_change_rate": 1.0,
       "innovation_gate_N_sigma": 3.0,
       "hibernation_reset_threshold_hours": 720
     }
