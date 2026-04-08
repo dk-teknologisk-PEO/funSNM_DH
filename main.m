@@ -39,6 +39,15 @@ air_temp_cutoff = config.project.initialization.max_air_temperature;
 error_meaning = config.project.initialization.modify_mean_offset;
 hibernation_reset_threshold_hours = config.project.initialization.hibernation_reset_threshold_hours;
 
+%%% STEP 1.1: Hard innovation gate threshold
+%%% Read from config if available, otherwise use a safe default of 2.0 degC
+if isfield(config.project.initialization, 'max_innovation_C')
+    hard_innovation_gate_C = config.project.initialization.max_innovation_C;
+else
+    hard_innovation_gate_C = 2.0;
+end
+fprintf('STEP 1.1: Hard innovation gate set to %.2f °C\n', hard_innovation_gate_C);
+
 networks = config.project.datasets.datasets;
 
 % load network topology and measurement data
@@ -97,6 +106,11 @@ for network = networks
         last_update_timestamp_ukf = NaT(num_houses_csac,1);
         last_update_timestamp_pf = NaT(num_houses_csac,1);
 
+        %%% STEP 1.1: Add counters for diagnostic tracking
+        gate_reject_count_ukf = 0;
+        gate_reject_count_pf = 0;
+        gate_accept_count_ukf = 0;
+        gate_accept_count_pf = 0;
 
         for i = 1:num_houses_csac
             x_init = [randn()*0.3; 0.12 + randn()*0.03]; % make initial guess for house i
@@ -187,6 +201,9 @@ for network = networks
                     house_data.T_main_ukf_C, current_T_soil_C, house_data.flow_kg_h, alpha_ukf, 'UKF');
                 end
 
+                %% ============================================================
+                %% UKF UPDATE BLOCK
+                %% ============================================================
                 if can_update_ukf
                     if isnan(last_valid_T_main_ukf_C(i))
                         delta_T_main_change_ukf = 0;
@@ -200,19 +217,23 @@ for network = networks
                         is_system_stable = (delta_T_main_change_ukf < max_delta_T_change);
                     end
 
-                    % last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
                     if is_system_stable
-                        % update UKF and particle filter
-                        predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h,ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
-                        
+                        % Calculate innovation BEFORE calling the update function
+                        predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
-                        effective_ukf_gate = max(ukf_innovation_gate(i), 3.0);
 
-                        % if csac == 1   % replace with the problematic csac id
-                        %     print_gate_summary(csac, time, house_id, can_update_ukf, innovation, ukf_innovation_gate(i), 3.0, 'UKF');
-                        % end
-
-                        if abs(innovation) < effective_ukf_gate
+                        %%% STEP 1.1: Hard innovation gate
+                        if abs(innovation) > hard_innovation_gate_C
+                            % REJECT this measurement — it's an outlier
+                            gate_reject_count_ukf = gate_reject_count_ukf + 1;
+                            if debug_print_update_result
+                                fprintf('UKF GATE REJECT | house %d | time %s | innovation=%.3f°C > gate=%.1f°C\n', ...
+                                    house_id, string(time), innovation, hard_innovation_gate_C);
+                            end
+                            % Skip the update, but still carry forward the previous state in the logger
+                        else
+                            %%% STEP 1.1: Innovation passed the gate — proceed with update
+                            gate_accept_count_ukf = gate_accept_count_ukf + 1;
                             x_before = ukf_states{i}.x;
                             P_before = ukf_states{i}.P;
 
@@ -220,7 +241,6 @@ for network = networks
                             if any(isnan(ukf_states{i}.x), 'all') || any(isnan(ukf_states{i}.P), 'all')
                                 warning('UKF returned NaN for house %d at %s', house_id, string(time));
                             else
-
                                 ukf_offsets(i) = ukf_states{i}.x(1);
                                 log_ukf = true;
                                 last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
@@ -232,13 +252,17 @@ for network = networks
                                 warning('Invalid UKF P_zz for house %d at %s', house_id, string(time));
                             end
                             if debug_print_update_result
-                                fprintf('UKF UPDATE | house %d | time %s | dx=[%.4f %.4f]\n', ...
-                                    house_id, string(time), ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
+                                fprintf('UKF UPDATE | house %d | time %s | innov=%.3f | dx=[%.4f %.6f]\n', ...
+                                    house_id, string(time), innovation, ...
+                                    ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
                             end
-                        end
+                        end  %%% STEP 1.1: end of gate check
                     end % end of stable ukf
                 end % end of valid ukf-scenario
                 
+                %% ============================================================
+                %% PF UPDATE BLOCK
+                %% ============================================================
                 if can_update_pf
                     if isnan(last_valid_T_main_pf_C(i))
                         delta_T_main_change_pf = 0;
@@ -252,14 +276,22 @@ for network = networks
                         is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
                     end
 
-                    % last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
                     if is_system_stable
-                        predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h,pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
+                        % Calculate innovation BEFORE calling the update function
+                        predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
-                        effective_pf_gate = max(pf_innovation_gate(i), 3.0);
 
-                        
-                        if abs(innovation) < effective_pf_gate
+                        %%% STEP 1.1: Hard innovation gate (same logic for PF)
+                        if abs(innovation) > hard_innovation_gate_C
+                            % REJECT this measurement
+                            gate_reject_count_pf = gate_reject_count_pf + 1;
+                            if debug_print_update_result
+                                fprintf('PF  GATE REJECT | house %d | time %s | innovation=%.3f°C > gate=%.1f°C\n', ...
+                                    house_id, string(time), innovation, hard_innovation_gate_C);
+                            end
+                        else
+                            %%% STEP 1.1: Innovation passed the gate — proceed with update
+                            gate_accept_count_pf = gate_accept_count_pf + 1;
                             x_before = pf_states{i}.x;
 
                             [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
@@ -279,11 +311,12 @@ for network = networks
                                     warning('Invalid PF P_zz for house %d at %s', house_id, string(time));
                                 end
                                 if debug_print_update_result
-                                    fprintf('PF UPDATE | house %d | time %s | dx=[%.4f %.4f]\n', ...
-                                        house_id, string(time), pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
+                                    fprintf('PF  UPDATE | house %d | time %s | innov=%.3f | dx=[%.4f %.6f]\n', ...
+                                        house_id, string(time), innovation, ...
+                                        pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
                                 end
                             end
-                        end
+                        end  %%% STEP 1.1: end of gate check
                     end
                 end
 
@@ -326,18 +359,25 @@ for network = networks
                     end
                 end
             end
-        end 
+        end
+
+        %%% STEP 1.1: Print gate statistics at end of each CSAC
+        fprintf('\n=== CSAC %d Gate Statistics ===\n', csac);
+        fprintf('UKF: %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
+            gate_accept_count_ukf, gate_reject_count_ukf, ...
+            100*gate_reject_count_ukf / max(1, gate_accept_count_ukf + gate_reject_count_ukf));
+        fprintf('PF:  %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
+            gate_accept_count_pf, gate_reject_count_pf, ...
+            100*gate_reject_count_pf / max(1, gate_accept_count_pf + gate_reject_count_pf));
+        fprintf('=====================================\n\n');
+
         plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
         plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
         save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
         save_logger_to_csv(logger_pf, output_folder_pf, strcat('pf_csac_', string(csac)));
     end
-    % prev_houses = prev_houses + size(num_houses_csac);
-    % --- Plot and Save Diagnostics for this CSAC ---
    
 end
-% end % End of CSAC loop
-% end % End of network loop
 
 close(w);
 disp('Analysis complete. All diagnostic plots have been saved.')
