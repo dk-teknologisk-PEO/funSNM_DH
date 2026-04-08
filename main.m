@@ -375,6 +375,10 @@ for network = networks
         plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
         save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
         save_logger_to_csv(logger_pf, output_folder_pf, strcat('pf_csac_', string(csac)));
+
+        %%% Add after save_logger_to_csv calls:
+        save_diagnostic_summary(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
+        save_diagnostic_summary(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
     end
    
 end
