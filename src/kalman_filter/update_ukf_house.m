@@ -110,7 +110,11 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     P_pred = P + Q;
 
     alpha_forget = config.project.initialization.ukf.alpha_forget; % Use a small value since updates are sparse (gated)
-    P_pred = alpha_forget * P_pred; 
+    P_max_offset = 4.0^2;   % max uncertainty: 4°C std dev
+    P_max_U      = 0.2^2;   % max uncertainty: 0.2 W/m/K std dev
+
+    P_pred(1,1) = min(alpha_forget * P_pred(1,1), P_max_offset);
+    P_pred(2,2) = min(alpha_forget * P_pred(2,2), P_max_U);
 
     %% 4. UKF Measurement Update Step
     
