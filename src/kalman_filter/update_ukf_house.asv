@@ -160,29 +160,11 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Update state and covariance
     x_new = x_pred + K * y;
 
-    %%% STEP 1.2: Maximum step size limiter
-    %%% Prevents a single noisy measurement from corrupting a converged estimate.
-    max_dx = [0.15; 0.01];  % max change per update: 0.15°C offset, 0.01 W/m/K
-    dx = x_new - x_pred;
-    was_limited = false;
-    for idx = 1:length(dx)
-        if abs(dx(idx)) > max_dx(idx)
-            dx(idx) = sign(dx(idx)) * max_dx(idx);
-            was_limited = true;
-        end
-    end
-    x_new = x_pred + dx;
 
 
+    
     P_new = P_pred - K * P_zz * K';
     P_new = (P_new + P_new') / 2; % ensure symmetry
-
-    %%% STEP 1.2: If step was limited, inflate covariance to signal
-    %%% that the filter was overconfident
-    if was_limited
-        P_new(1,1) = P_new(1,1) * 1.5;
-        P_new(2,2) = P_new(2,2) * 1.5;
-    end
     
     % Apply physical constraints to the state
     % Define the boundaries for the states
