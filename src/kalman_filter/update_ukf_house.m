@@ -86,7 +86,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % --- Scale Process Noise ---
     % If we should focus on the U-value, increase its process noise to allow
     % the filter to update it more aggressively.
-    noise_scaler = 100; % Amplifies the effect. Tune this parameter.
+    noise_scaler = 10; % Amplifies the effect. Tune this parameter.
     
     Q_offset_var = Q_base_offset_var * (1 + noise_scaler * focus_on_offset);
     Q_U_var      = Q_base_U_var      * (1 + noise_scaler * focus_on_U);
