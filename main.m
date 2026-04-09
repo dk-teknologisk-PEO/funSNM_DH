@@ -339,27 +339,30 @@ for network = networks
                     ukf_states{i}.x(1) = ukf_states{i}.x(1) - ukf_master_offset;
                 end
             end
-            if ~isnan(pf_master_offset)
-                for i=1:num_houses_csac
-                    pf_states{i}.x(1) = pf_states{i}.x(1)-pf_master_offset;
-                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - pf_master_offset;
-                end
-            end
-
-            if error_meaning && ~debug_disable_mean_centering
-                mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
-                mean_pf_offsets = mean(pf_offsets, 'omitmissing');
-                for i=1:num_houses_csac
-                    if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
-                        ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
-                    end
-                    if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
-                        pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
-                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
-                    end
-                end
-            end
-        end
+        %% ================================================================
+        %% MASTER OFFSET APPLICATION
+        %% TEMPORARILY DISABLED. WILL BE RE-ANABLED AT A LATER POINT
+        %     if ~isnan(pf_master_offset)
+        %         for i=1:num_houses_csac
+        %             pf_states{i}.x(1) = pf_states{i}.x(1)-pf_master_offset;
+        %             pf_particles{i}(1,:) = pf_particles{i}(1,:) - pf_master_offset;
+        %         end
+        %     end
+        % 
+        %     if error_meaning && ~debug_disable_mean_centering
+        %         mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
+        %         mean_pf_offsets = mean(pf_offsets, 'omitmissing');
+        %         for i=1:num_houses_csac
+        %             if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
+        %                 ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
+        %             end
+        %             if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
+        %                 pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
+        %                 pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
+        %             end
+        %         end
+        %     end
+        % end
 
         %%% STEP 1.1: Print gate statistics at end of each CSAC
         fprintf('\n=== CSAC %d Gate Statistics ===\n', csac);
