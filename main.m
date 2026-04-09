@@ -338,20 +338,23 @@ for network = networks
             %% ============================================================
             %% MASTER OFFSET APPLICATION
             %% ============================================================
-            %%% TEMPORARILY DISABLED (Phase 3 will re-enable with damping)
-            %%% The undamped master offset creates a feedback loop that
-            %%% drives all offsets to the -2.0 boundary.
-            % if ~isnan(ukf_master_offset)
-            %     for i=1:num_houses_csac
-            %         ukf_states{i}.x(1) = ukf_states{i}.x(1) - ukf_master_offset;
-            %     end
-            % end
-            % if ~isnan(pf_master_offset)
-            %     for i=1:num_houses_csac
-            %         pf_states{i}.x(1) = pf_states{i}.x(1)-pf_master_offset;
-            %         pf_particles{i}(1,:) = pf_particles{i}(1,:) - pf_master_offset;
-            %     end
-            % end
+            master_offset_gamma = 0.1;   %learning rate: apply 10% per timestep
+            master_offset_deadzone = 0.05; % ignore correction smaller than this
+
+            if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
+                damped_ukf_offset = master_offset_gamma * ukf_master_offset;
+                for i = 1:num_houses_csac
+                    ukf_states{i}.x(1) = ukf_states{i}.x(1) - damped_ukf_offset;
+                end
+            end
+
+            if ~isnan(pf_master_offset) && abs(pf_master_offset) > master_offset_deadzone
+                damped_pf_offset = master_offset_gamma * pf_master_offset;
+                for i = 1:num_houses_csac
+                    pf_states{i}.x(1) = pf_states{i}.x(1) - damped_pf_offset;
+                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - damped_pf_offset;
+                end
+            end
 
             if error_meaning && ~debug_disable_mean_centering
                 mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
