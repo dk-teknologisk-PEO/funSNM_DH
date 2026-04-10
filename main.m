@@ -391,6 +391,8 @@ for network = networks
         save_diagnostic_summary(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
         save_diagnostic_summary_detailed(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
         save_diagnostic_summary_detailed(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
+        save_daily_diagnostics(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
+        save_daily_diagnostics(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
     end
    
 end
