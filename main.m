@@ -195,11 +195,11 @@ for network = networks
                 can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
                 can_update_pf = is_csac_active && is_flow_sufficient_pf && delta_T_pf_sufficient;
                 
-                if csac == 1 && t <= 20
-                    print_full_gate_summary(csac, time, house_id, ...
-                    is_csac_active, is_flow_sufficient_ukf, delta_T_ukf_sufficient, ...
-                    house_data.T_main_ukf_C, current_T_soil_C, house_data.flow_kg_h, alpha_ukf, 'UKF');
-                end
+                % if csac == 1 && t <= 20
+                %     print_full_gate_summary(csac, time, house_id, ...
+                %     is_csac_active, is_flow_sufficient_ukf, delta_T_ukf_sufficient, ...
+                %     house_data.T_main_ukf_C, current_T_soil_C, house_data.flow_kg_h, alpha_ukf, 'UKF');
+                % end
 
                 %% ============================================================
                 %% UKF UPDATE BLOCK

@@ -103,7 +103,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     
     % We generate sigma points directly from the predicted distribution
     % to keep the formulation clean and standard.
-    lambda_offset = 0.005; % gentle mean reversion per timestep
+    lambda_offset = 0.02; % gentle mean reversion per timestep
     x_pred = x; % Our process model is x_k+1 = x_k
     x_pred(1) = (1-lambda_offset)*x(1);
 
@@ -119,7 +119,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     %% Covariance floor — prevent overconfidence, ensure ongoing responsiveness
     P_floor_offset = (0.05)^2;   % 0.05°C std dev minimum
     P_floor_U      = (0.005)^2;  % 0.005 W/m/K std dev minimum
-    
+
     P_pred(1,1) = max(P_pred(1,1), P_floor_offset);
     P_pred(2,2) = max(P_pred(2,2), P_floor_U);
 
