@@ -116,6 +116,13 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     P_pred(1,1) = min(alpha_forget * P_pred(1,1), P_max_offset);
     P_pred(2,2) = min(alpha_forget * P_pred(2,2), P_max_U);
 
+    %% Covariance floor — prevent overconfidence, ensure ongoing responsiveness
+    P_floor_offset = (0.05)^2;   % 0.05°C std dev minimum
+    P_floor_U      = (0.005)^2;  % 0.005 W/m/K std dev minimum
+    
+    P_pred(1,1) = max(P_pred(1,1), P_floor_offset);
+    P_pred(2,2) = max(P_pred(2,2), P_floor_U);
+
     %% 4. UKF Measurement Update Step
     
     % Generate sigma points from the *a priori* (predicted) distribution
