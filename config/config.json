@@ -26,13 +26,13 @@
       "flow_cutoff_low": 50,
       "delta_T_gate_threshold": 30,
       "U_min": 0.08,
-      "U_max": 0.20,
+      "U_max": 0.30,
       "offset_min": -2,
       "offset_max": 2
     },
     "initialization": {
       "ukf": {
-        "alpha_forget": 1.005,
+        "alpha_forget": 1.000,
         "measurement_noise": 0.25,
         "process_noise_offset": 0.01,
         "process_noise_U": 0.001,
