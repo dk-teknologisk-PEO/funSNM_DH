@@ -13,7 +13,7 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
     u_service = cellfun(@(s) s.x(2), states(:));
     offsets   = cellfun(@(s) s.x(1), states(:));
     service_lengths_m = current_data.length_service_m;
-    T_main_C = get_main_temp(current_data.T_supply_C + offsets, current_data.flow_kg_h, u_service, service_lengths_m, current_T_soil_C);
+    T_main_C = get_main_temp(current_data.T_supply_C, current_data.flow_kg_h, u_service, service_lengths_m, current_T_soil_C);
     T_main_C(~isfinite(T_main_C)) = NaN;
     current_data.T_main_C = T_main_C;
     
