@@ -1,6 +1,7 @@
 function save_daily_diagnostics(logger, ground_truth_csac, csac, output_folder, filter_name)
 %SAVE_DAILY_DIAGNOSTICS Saves a compact daily-resolution CSV for analysis.
 %   One row per house per day. Contains estimation errors, uncertainties, and NIS.
+%   Only days with at least one filter update are included.
 
     if nargin < 5
         filter_name = 'ukf';
@@ -50,6 +51,11 @@ function save_daily_diagnostics(logger, ground_truth_csac, csac, output_folder, 
 
             day_nis = nis_values(idx, i);
             day_nis = day_nis(isfinite(day_nis));
+
+            % Skip days with no actual filter updates
+            if isempty(day_innov)
+                continue;
+            end
 
             row = { ...
                 unique_days(d), ...
