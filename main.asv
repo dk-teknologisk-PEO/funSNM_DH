@@ -3,6 +3,12 @@ clear all
 close all
 clc
 
+% --- DEBUG SETTINGS ---
+debug_disable_stability_gate = true;
+debug_disable_mean_centering = true;
+debug_print_update_result = false;
+
+
 addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
 
 % read config-file
@@ -36,6 +42,7 @@ Q_base = diag([(config.project.initialization.ukf.process_noise_offset)^2, (conf
 P_base = diag([(config.project.initialization.ukf.state_uncertainty_offset)^2, (config.project.initialization.ukf.state_uncertainty_U)^2]);
 innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_offset * config.project.initialization.innovation_gate_N_sigma;
 
+
 % pf-configuration
 num_particles = config.project.initialization.pf.num_particles;
 
@@ -43,7 +50,7 @@ num_particles = config.project.initialization.pf.num_particles;
 absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
 delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
 min_active_houses = config.project.initialization.min_active_houses;
-gate_N_sigma = config.project.initialization.innovation_gate_N_sigma;
+gate_N_sigma = config.project.initialization.innovation_gate_N_sigma ;
 max_innovation = config.project.initialization.max_innovation_C;
 alpha_min = config.project.cutoff.alpha_min;
 
@@ -54,13 +61,23 @@ air_temp_cutoff = config.project.initialization.max_air_temperature;
 error_meaning = config.project.initialization.modify_mean_offset;
 hibernation_reset_threshold_hours = config.project.initialization.hibernation_reset_threshold_hours;
 
+%%% STEP 1.1: Hard innovation gate threshold
+%%% Read from config if available, otherwise use a safe default of 2.0 degC
+if isfield(config.project.initialization, 'max_innovation_C')
+    hard_innovation_gate_C = config.project.initialization.max_innovation_C;
+else
+    hard_innovation_gate_C = 2.0;
+end
+fprintf('STEP 1.1: Hard innovation gate set to %.2f °C\n', hard_innovation_gate_C);
+
 networks = config.project.datasets.datasets;
 
 % load network topology and measurement data
 [T_soil_C, T_air_C] = soilTemp(config);
-output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf');
-output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf');
+output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf'); % Create a unique folder for this run
+output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf'); % Create a unique folder for this run
 w = waitbar(0.0, "Starting analysis");
+
 
 % run through all the networks from the config-file
 for network = networks
@@ -76,42 +93,53 @@ for network = networks
     for csac=csac_ids
         
         % extract relevant data for the csac
-        U_csac = topology.pipe_parameters.csac_pipe.insulation_W_m_K;
+        U_csac = topology.pipe_parameters.csac_pipe.insulation_W_m_K; % U-value of the main pipe
         houses_csac = ([topology.houses.cul_de_sac_id]==csac);
         topology_csac = topology.houses(houses_csac);
         num_houses_csac = sum(houses_csac);
         houses_csac_ids = sort([topology.houses(houses_csac).id]);
         true_offset = zeros([size(topology_csac),1]);
 
+        % create a table with reference-values (only possible when there is
+        % a topology)
         ground_truth_csac = table([topology_csac.id]', true_offset, [topology_csac.service_pipe_insulation_W_m_K]', ...
             'VariableNames', {'house_id', 'true_offset', 'true_U'});
         
+        % create a table with lengths and positions of service pipes.
         csac_table = table([topology_csac.id]', [topology_csac.service_pipe_len_m]', [topology_csac.dist_on_cul_de_sac_m]', 'VariableNames',{'house_id','length_service_m','x_pos_m'});
 
+
+        % extract relevant meter data
         meter_data_csac = meter_data(ismember(meter_data.house_id,houses_csac_ids),:);
         meter_data_csac = join(meter_data_csac, csac_table, "Keys", "house_id");
 
-        % initialize filters for each house
+        % initialize a Kalman filter and particle filter for each house on the csac and store
+        % them i a structure for easy access
         ukf_states = cell(1, num_houses_csac);
         pf_particles = cell(1, num_houses_csac);
         pf_states = cell(1, num_houses_csac);
         ukf_innovation_gate = nan([1,num_houses_csac]);
         pf_innovation_gate = nan([1,num_houses_csac]);
         
+        % keep a history of last known main pipe temperatures for each
+        % house
         last_valid_T_main_ukf_C = nan(num_houses_csac,1);
         last_valid_T_main_pf_C = nan(num_houses_csac,1);
         last_update_timestamp_ukf = NaT(num_houses_csac,1);
         last_update_timestamp_pf = NaT(num_houses_csac,1);
 
-        % Gate statistics
+        %%% STEP 1.1: Add counters for diagnostic tracking
         gate_reject_count_ukf = 0;
         gate_reject_count_pf = 0;
         gate_accept_count_ukf = 0;
         gate_accept_count_pf = 0;
 
         for i = 1:num_houses_csac
-            x_init = [randn()*0.3; 0.12 + randn()*0.03];
-            ukf_states{i} = initialize_kalman_filter(x_init, Q_base, R_base, P_base);
+            x_init = [randn()*0.3; 0.12 + randn()*0.03]; % make initial guess for house i
+            
+            % set up the UKF-state for house i
+            ukf_states{i}=initialize_kalman_filter(x_init, Q_base, R_base, P_base);
+            % set up particles for house i
             pf_particles{i} = initialize_pf_state(num_particles, x_init, P_base, config);
             pf_states{i}.x = x_init;
             pf_states{i}.P = P_base;
@@ -119,32 +147,14 @@ for network = networks
             pf_innovation_gate(i) = innovation_gate_initial;
         end
         
-        % set up loggers
+        % set up loggers for the two filters
         logger_ukf = initialize_logger(num_houses_csac, length(timestamps), houses_csac_ids);
         logger_pf = initialize_logger(num_houses_csac, length(timestamps), houses_csac_ids);
 
+        % keep track of the overall offsets, allowing us to modify their
+        % means later on
         ukf_offsets = nan([num_houses_csac,1]);
         pf_offsets = nan([num_houses_csac,1]);
-
-        % === HEATING SEASON STATE TRACKING ===
-        season_active = true;
-        season_end_timestep = NaN;
-        season_start_timestep = 1;
-        degraded_day_count = 0;
-        good_day_count = 0;
-        nis_history = nan(1, season_window_days * 6);
-        nis_history_idx = 0;
-        
-        % Snapshot of last known good states
-        ukf_states_snapshot = cell(size(ukf_states));
-        pf_states_snapshot = cell(size(pf_states));
-        snapshot_timestep = NaN;
-        for i = 1:num_houses_csac
-            ukf_states_snapshot{i}.x = ukf_states{i}.x;
-            ukf_states_snapshot{i}.P = ukf_states{i}.P;
-            pf_states_snapshot{i}.x = pf_states{i}.x;
-            pf_states_snapshot{i}.P = pf_states{i}.P;
-        end
 
         % run through the timesteps
         waitbar((csac)/length(csac_ids),w,strcat("Running network. At timestep: 0/", string(length(timestamps)),", csac: ",string(csac),"/",string(length(csac_ids)-1),", network: ", string(network)))
@@ -156,11 +166,13 @@ for network = networks
             end
             time = timestamps(t);
 
+            % extract data from this timestep
             current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
             current_data = sortrows(current_data, 'house_id');
 
             current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
             current_T_air_C = T_air_C((year(T_air_C.time)==year(time)) & (month(T_air_C.time)==month(time)) & (day(T_air_C.time)==day(time)),:).values;
+         
 
             if isempty(current_data) || isempty(current_T_soil_C)
                 continue
@@ -182,13 +194,10 @@ for network = networks
             logger_ukf.timestamps(t) = time;
             logger_pf.timestamps(t) = time;
 
-            % === Per-timestep tracking for season detection ===
-            log_ukf_flags = false(1, num_houses_csac);
-            diagnostics_ukf_all = cell(1, num_houses_csac);
-
             for i = 1:num_houses_csac
                 log_ukf = false;
                 log_pf = false;
+                % if ~skip_timestep
                 house_id = houses_csac_ids(i);
                 house_data = current_data(current_data.house_id==house_id,:);
                 if isempty(house_data)
@@ -200,16 +209,24 @@ for network = networks
                 [is_flow_sufficient_pf, alpha_pf, theta_pf, min_flow_pf_kg_h] = flow_validity_gate(house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, alpha_min);
                 is_flow_sufficient_pf = is_flow_sufficient_pf && (house_data.flow_kg_h>absolute_flow_floor_kg_h);
                
+                
                 delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
                 delta_T_pf_sufficient = ((house_data.T_main_pf_C - current_T_soil_C) >= delta_T_gate_threshold);
 
+                % check if all gating conditions are fulfilled
                 can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
                 can_update_pf = is_csac_active && is_flow_sufficient_pf && delta_T_pf_sufficient;
+                
+                % if csac == 1 && t <= 20
+                %     print_full_gate_summary(csac, time, house_id, ...
+                %     is_csac_active, is_flow_sufficient_ukf, delta_T_ukf_sufficient, ...
+                %     house_data.T_main_ukf_C, current_T_soil_C, house_data.flow_kg_h, alpha_ukf, 'UKF');
+                % end
 
                 %% ============================================================
-                %% UKF UPDATE BLOCK (skip if season inactive)
+                %% UKF UPDATE BLOCK
                 %% ============================================================
-                if can_update_ukf && season_active
+                if can_update_ukf
                     if isnan(last_valid_T_main_ukf_C(i))
                         delta_T_main_change_ukf = 0;
                     else
@@ -223,16 +240,21 @@ for network = networks
                     end
 
                     if is_system_stable
+                        % Calculate innovation BEFORE calling the update function
                         predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
 
+                        %%% STEP 1.1: Hard innovation gate
                         if abs(innovation) > hard_innovation_gate_C
+                            % REJECT this measurement — it's an outlier
                             gate_reject_count_ukf = gate_reject_count_ukf + 1;
                             if debug_print_update_result
                                 fprintf('UKF GATE REJECT | house %d | time %s | innovation=%.3f°C > gate=%.1f°C\n', ...
                                     house_id, string(time), innovation, hard_innovation_gate_C);
                             end
+                            % Skip the update, but still carry forward the previous state in the logger
                         else
+                            %%% STEP 1.1: Innovation passed the gate — proceed with update
                             gate_accept_count_ukf = gate_accept_count_ukf + 1;
                             x_before = ukf_states{i}.x;
                             P_before = ukf_states{i}.P;
@@ -243,8 +265,6 @@ for network = networks
                             else
                                 ukf_offsets(i) = ukf_states{i}.x(1);
                                 log_ukf = true;
-                                log_ukf_flags(i) = true;
-                                diagnostics_ukf_all{i} = diagnostics_ukf;
                                 last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
                                 last_update_timestamp_ukf(i) = time;
                             end
@@ -258,14 +278,14 @@ for network = networks
                                     house_id, string(time), innovation, ...
                                     ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
                             end
-                        end
-                    end
-                end
+                        end  %%% STEP 1.1: end of gate check
+                    end % end of stable ukf
+                end % end of valid ukf-scenario
                 
                 %% ============================================================
-                %% PF UPDATE BLOCK (skip if season inactive)
+                %% PF UPDATE BLOCK
                 %% ============================================================
-                if can_update_pf && season_active
+                if can_update_pf
                     if isnan(last_valid_T_main_pf_C(i))
                         delta_T_main_change_pf = 0;
                     else
@@ -279,16 +299,20 @@ for network = networks
                     end
 
                     if is_system_stable
+                        % Calculate innovation BEFORE calling the update function
                         predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
                         innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
 
+                        %%% STEP 1.1: Hard innovation gate (same logic for PF)
                         if abs(innovation) > hard_innovation_gate_C
+                            % REJECT this measurement
                             gate_reject_count_pf = gate_reject_count_pf + 1;
                             if debug_print_update_result
                                 fprintf('PF  GATE REJECT | house %d | time %s | innovation=%.3f°C > gate=%.1f°C\n', ...
                                     house_id, string(time), innovation, hard_innovation_gate_C);
                             end
                         else
+                            %%% STEP 1.1: Innovation passed the gate — proceed with update
                             gate_accept_count_pf = gate_accept_count_pf + 1;
                             x_before = pf_states{i}.x;
 
@@ -314,7 +338,7 @@ for network = networks
                                         pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
                                 end
                             end
-                        end
+                        end  %%% STEP 1.1: end of gate check
                     end
                 end
 
@@ -323,117 +347,22 @@ for network = networks
                 elseif t > 1
                     logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
                     logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
-                end
+                end % end of ukf-logger
                 if log_pf
                     logger_pf = update_logger(logger_pf, t, i, time, pf_states{i}, diagnostics_pf);
                 elseif t > 1
                     logger_pf.state_estimates(:, i, t) = logger_pf.state_estimates(:, i, t-1);
                     logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
-                end
+                end % end of pf-logger
             end
 
-            %% ============================================================
-            %% HEATING SEASON DETECTION
-            %% (after all house updates, before master offset)
-            %% ============================================================
-            
-            % Collect NIS values from this timestep across all houses
-            timestep_nis_values = [];
-            timestep_update_count = sum(log_ukf_flags);
-            for i = 1:num_houses_csac
-                if log_ukf_flags(i) && ~isempty(diagnostics_ukf_all{i})
-                    if isfield(diagnostics_ukf_all{i}, 'nis') && isfinite(diagnostics_ukf_all{i}.nis)
-                        timestep_nis_values(end+1) = diagnostics_ukf_all{i}.nis;
-                    end
-                end
-            end
-            
-            % Compute CSAC-level NIS for this timestep
-            active_fraction = timestep_update_count / num_houses_csac;
-            if ~isempty(timestep_nis_values) && active_fraction >= season_min_active_fraction
-                csac_mean_nis = mean(timestep_nis_values);
-                
-                % Add to rolling history
-                nis_history_idx = nis_history_idx + 1;
-                if nis_history_idx > length(nis_history)
-                    nis_history = [nis_history, nan(1, 100)];
-                end
-                nis_history(nis_history_idx) = csac_mean_nis;
-                
-                % Compute rolling median over window
-                window_size = min(nis_history_idx, season_window_days * 4);
-                recent_nis = nis_history(max(1,nis_history_idx-window_size+1):nis_history_idx);
-                recent_nis = recent_nis(isfinite(recent_nis));
-                rolling_median_nis = median(recent_nis);
-                
-                if season_active
-                    % --- Check for season end ---
-                    if rolling_median_nis > season_nis_threshold
-                        degraded_day_count = degraded_day_count + 1;
-                        if degraded_day_count >= season_consec_bad_to_end
-                            % === SEASON END DETECTED ===
-                            season_active = false;
-                            season_end_timestep = t;
-                            
-                            fprintf('\n*** CSAC %d: HEATING SEASON END detected at timestep %d (%s) ***\n', ...
-                                csac, t, string(time));
-                            fprintf('    Rolling median NIS = %.2f (threshold = %.1f)\n', ...
-                                rolling_median_nis, season_nis_threshold);
-                            fprintf('    Reverting to snapshot from timestep %d\n', snapshot_timestep);
-                            
-                            % Revert to last good snapshot
-                            for i = 1:num_houses_csac
-                                ukf_states{i}.x = ukf_states_snapshot{i}.x;
-                                ukf_states{i}.P = ukf_states_snapshot{i}.P;
-                                pf_states{i}.x = pf_states_snapshot{i}.x;
-                                pf_states{i}.P = pf_states_snapshot{i}.P;
-                            end
-                        end
-                    else
-                        degraded_day_count = 0;
-                        
-                        % Update snapshot — conditions are good
-                        snapshot_timestep = t;
-                        for i = 1:num_houses_csac
-                            ukf_states_snapshot{i}.x = ukf_states{i}.x;
-                            ukf_states_snapshot{i}.P = ukf_states{i}.P;
-                            pf_states_snapshot{i}.x = pf_states{i}.x;
-                            pf_states_snapshot{i}.P = pf_states{i}.P;
-                        end
-                    end
-                else
-                    % --- Monitor mode: check for season restart ---
-                    if rolling_median_nis < season_restart_nis_threshold && active_fraction >= season_min_active_fraction
-                        good_day_count = good_day_count + 1;
-                        if good_day_count >= season_consec_good_to_restart
-                            % === SEASON RESTART DETECTED ===
-                            season_active = true;
-                            season_start_timestep = t;
-                            good_day_count = 0;
-                            degraded_day_count = 0;
-                            
-                            fprintf('\n*** CSAC %d: HEATING SEASON RESTART detected at timestep %d (%s) ***\n', ...
-                                csac, t, string(time));
-                            
-                            % Inflate P back toward initial values
-                            for i = 1:num_houses_csac
-                                P_current = ukf_states{i}.P;
-                                P_inflated = P_current + season_P_inflation_factor * P_base;
-                                P_inflated(1,1) = min(P_inflated(1,1), P_base(1,1));
-                                P_inflated(2,2) = min(P_inflated(2,2), P_base(2,2));
-                                ukf_states{i}.P = P_inflated;
-                                pf_states{i}.P = P_inflated;
-                            end
-                        end
-                    else
-                        good_day_count = 0;
-                    end
-                end
-            end
 
             %% ============================================================
-            %% MASTER OFFSET APPLICATION (skip if season inactive)
+            %% MASTER OFFSET APPLICATION
             %% ============================================================
+            master_offset_gamma = 0.1;   %learning rate: apply 10% per timestep
+            master_offset_deadzone = 0.05; % ignore correction smaller than this
+
             if season_active
                 if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
                     damped_ukf_offset = master_offset_gamma * ukf_master_offset;
@@ -441,7 +370,7 @@ for network = networks
                         ukf_states{i}.x(1) = ukf_states{i}.x(1) - damped_ukf_offset;
                     end
                 end
-
+    
                 if ~isnan(pf_master_offset) && abs(pf_master_offset) > master_offset_deadzone
                     damped_pf_offset = master_offset_gamma * pf_master_offset;
                     for i = 1:num_houses_csac
@@ -466,7 +395,7 @@ for network = networks
             end
         end
 
-        % Print gate statistics
+        %%% STEP 1.1: Print gate statistics at end of each CSAC
         fprintf('\n=== CSAC %d Gate Statistics ===\n', csac);
         fprintf('UKF: %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
             gate_accept_count_ukf, gate_reject_count_ukf, ...
@@ -474,11 +403,6 @@ for network = networks
         fprintf('PF:  %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
             gate_accept_count_pf, gate_reject_count_pf, ...
             100*gate_reject_count_pf / max(1, gate_accept_count_pf + gate_reject_count_pf));
-        if ~isnan(season_end_timestep)
-            fprintf('Season ended at timestep %d, snapshot from timestep %d\n', season_end_timestep, snapshot_timestep);
-        else
-            fprintf('Season remained active throughout\n');
-        end
         fprintf('=====================================\n\n');
 
         plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
@@ -486,6 +410,7 @@ for network = networks
         save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
         save_logger_to_csv(logger_pf, output_folder_pf, strcat('pf_csac_', string(csac)));
 
+        %%% Add after save_logger_to_csv calls:
         save_diagnostic_summary(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
         save_diagnostic_summary(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
         save_diagnostic_summary_detailed(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');

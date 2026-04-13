@@ -1,7 +1,7 @@
 function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, flow_cutoff, states, T_start_C)
 % CALCULATE_MAIN_PIPE_TEMP Estimates main pipe temperature and a master offset.
-% Uses leave-one-out: each house's T_main is estimated from an optimizer
-% that excludes that house's own measurement, eliminating self-bias.
+% A single optimization is performed to find the best inlet temperature and
+% a shared meter offset for the entire cul-de-sac.
 %
 % If T_start_C is provided (measured inlet temperature), the optimization
 % is skipped and T_main is forward-simulated directly from that value.
@@ -12,7 +12,7 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
     T_main_fit_C = nan(num_houses,1);
     master_offset_C = NaN;
     
-    % Pre-compute segment geometry (shared by all paths)
+    % Pre-compute segment geometry
     Q_total = cumsum(current_data.flow_kg_h, 'reverse');
     x_diff_m = current_data.x_pos_m;
     x_diff_m(2:end) = diff(x_diff_m);
@@ -33,17 +33,16 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
         return;
     end
     
-    % === OPTIMIZATION PATH: estimate T_start via leave-one-out ===
+    % === OPTIMIZATION PATH: estimate T_start and master_offset ===
     
     % Back-calculate T_main_C from raw meter data
     u_service = cellfun(@(s) s.x(2), states(:));
-    offsets   = cellfun(@(s) s.x(1), states(:));
     service_lengths_m = current_data.length_service_m;
     T_main_C = get_main_temp(current_data.T_supply_C, current_data.flow_kg_h, u_service, service_lengths_m, current_T_soil_C);
     T_main_C(~isfinite(T_main_C)) = NaN;
     current_data.T_main_C = T_main_C;
     
-    % Global optimization (all houses) for baseline and master_offset
+    % Global optimization
     valid_houses_for_fit = find(isfinite(current_data.T_main_C));
     if numel(valid_houses_for_fit) < 2
         return;
@@ -51,50 +50,26 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
     
     opts = optimset('Display', 'off', 'TolX', 0.05, 'TolFun', 0.05, 'MaxIter', 200);
     
-    fun_global = @(params) main_temp_estimator_global(params, current_data, valid_houses_for_fit, current_T_soil_C, U_csac);
+    fun = @(params) main_temp_estimator_global(params, current_data, valid_houses_for_fit, current_T_soil_C, U_csac);
     default_start_T = max(T_main_C(valid_houses_for_fit));
     start_vector = [default_start_T, 0];
     
-    [p_global, ~, exitflag_global] = fminsearch(fun_global, start_vector, opts);
+    [p_global, ~, exitflag] = fminsearch(fun, start_vector, opts);
     
-    if exitflag_global <= 0 || any(~isfinite(p_global))
+    if exitflag <= 0 || any(~isfinite(p_global))
         warning('Global T_main optimization failed.');
         return;
     end
     
+    optimized_T_start = p_global(1);
     master_offset_C = p_global(2);
     
-    % Leave-one-out: for each valid house, re-optimize excluding it
-    opts_loo = optimset('Display', 'off', 'TolX', 0.02, 'TolFun', 0.02, 'MaxIter', 50);
-    
-    for j = 1:num_houses
-        if ~ismember(j, valid_houses_for_fit)
-            continue
+    % Forward-simulate for all houses from the optimized T_start
+    T_prev_C = optimized_T_start;
+    for i = 1:num_houses
+        T_prev_C = get_supply_temp(T_prev_C, Q_total(i), U_csac, x_diff_m(i), current_T_soil_C);
+        if current_data.flow_kg_h(i) >= flow_cutoff
+            T_main_fit_C(i) = T_prev_C;
         end
-        if current_data.flow_kg_h(j) < flow_cutoff
-            continue
-        end
-        
-        % All valid houses except j
-        loo_indices = valid_houses_for_fit(valid_houses_for_fit ~= j);
-        
-        if numel(loo_indices) < 2
-            % Not enough houses remaining — fall back to global solution
-            p_loo = p_global;
-        else
-            fun_loo = @(params) main_temp_estimator_global(params, current_data, loo_indices, current_T_soil_C, U_csac);
-            [p_loo, ~, exitflag_loo] = fminsearch(fun_loo, p_global, opts_loo);
-            
-            if exitflag_loo <= 0 || any(~isfinite(p_loo))
-                p_loo = p_global;
-            end
-        end
-        
-        % Forward-simulate from LOO-optimized T_start to house j
-        T_prev_C = p_loo(1);
-        for k = 1:j
-            T_prev_C = get_supply_temp(T_prev_C, Q_total(k), U_csac, x_diff_m(k), current_T_soil_C);
-        end
-        T_main_fit_C(j) = T_prev_C;
     end
 end
