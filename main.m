@@ -30,6 +30,7 @@ master_offset_deadzone = config.project.master_offset.deadzone;
 
 % --- HARD INNOVATION GATE (from config) ---
 hard_innovation_gate_C = config.project.initialization.max_innovation_C;
+max_nis = config.project.initialization.max_nis;
 fprintf('Hard innovation gate set to %.2f °C\n', hard_innovation_gate_C);
 
 % ukf-configuration
@@ -211,7 +212,7 @@ for network = networks
                 %% ============================================================
                 %% UKF UPDATE BLOCK (skip if season inactive)
                 %% ============================================================
-                if can_update_ukf && season_active
+                if can_update_ukf %&& season_active
                     if isnan(last_valid_T_main_ukf_C(i))
                         delta_T_main_change_ukf = 0;
                     else
@@ -235,7 +236,6 @@ for network = networks
                                     house_id, string(time), innovation, hard_innovation_gate_C);
                             end
                         else
-                            gate_accept_count_ukf = gate_accept_count_ukf + 1;
                             x_before = ukf_states{i}.x;
                             P_before = ukf_states{i}.P;
 
@@ -243,22 +243,41 @@ for network = networks
                             if any(isnan(ukf_states{i}.x), 'all') || any(isnan(ukf_states{i}.P), 'all')
                                 warning('UKF returned NaN for house %d at %s', house_id, string(time));
                             else
-                                ukf_offsets(i) = ukf_states{i}.x(1);
-                                log_ukf = true;
-                                log_ukf_flags(i) = true;
-                                diagnostics_ukf_all{i} = diagnostics_ukf;
-                                last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                                last_update_timestamp_ukf(i) = time;
-                            end
-                            if isfield(diagnostics_ukf, 'P_zz') && isfinite(diagnostics_ukf.P_zz) && diagnostics_ukf.P_zz > 0
-                                ukf_innovation_gate(i) = max(1, sqrt(diagnostics_ukf.P_zz) * config.project.initialization.innovation_gate_N_sigma);
-                            else
-                                warning('Invalid UKF P_zz for house %d at %s', house_id, string(time));
-                            end
-                            if debug_print_update_result
-                                fprintf('UKF UPDATE | house %d | time %s | innov=%.3f | dx=[%.4f %.6f]\n', ...
-                                    house_id, string(time), innovation, ...
-                                    ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
+                                % --- NIS gate: revert if update quality is poor ---
+                                nis_value = NaN;
+                                if isfield(diagnostics_ukf, 'y') && isfield(diagnostics_ukf, 'P_zz') ...
+                                        && isfinite(diagnostics_ukf.P_zz) && diagnostics_ukf.P_zz > 0
+                                    nis_value = (diagnostics_ukf.y^2) / diagnostics_ukf.P_zz;
+                                end
+                                
+                                if isfinite(nis_value) && nis_value > max_nis
+                                    % Revert state — this update is statistically inconsistent
+                                    ukf_states{i}.x = x_before;
+                                    ukf_states{i}.P = P_before;
+                                    gate_reject_count_ukf = gate_reject_count_ukf + 1;
+                                    if debug_print_update_result
+                                        fprintf('UKF NIS REJECT | house %d | time %s | NIS=%.2f > %.1f | innov=%.3f\n', ...
+                                            house_id, string(time), nis_value, max_nis, diagnostics_ukf.y);
+                                    end
+                                else
+                                    % Accept update
+                                    gate_accept_count_ukf = gate_accept_count_ukf + 1;
+                                    ukf_offsets(i) = ukf_states{i}.x(1);
+                                    log_ukf = true;
+                                    log_ukf_flags(i) = true;
+                                    diagnostics_ukf_all{i} = diagnostics_ukf;
+                                    last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
+                                    last_update_timestamp_ukf(i) = time;
+                                    
+                                    if isfield(diagnostics_ukf, 'P_zz') && isfinite(diagnostics_ukf.P_zz) && diagnostics_ukf.P_zz > 0
+                                        ukf_innovation_gate(i) = max(1, sqrt(diagnostics_ukf.P_zz) * config.project.initialization.innovation_gate_N_sigma);
+                                    end
+                                    if debug_print_update_result
+                                        fprintf('UKF UPDATE | house %d | time %s | NIS=%.2f | innov=%.3f | dx=[%.4f %.6f]\n', ...
+                                            house_id, string(time), nis_value, diagnostics_ukf.y, ...
+                                            ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
+                                    end
+                                end
                             end
                         end
                     end
@@ -267,7 +286,7 @@ for network = networks
                 %% ============================================================
                 %% PF UPDATE BLOCK (skip if season inactive)
                 %% ============================================================
-                if can_update_pf && season_active
+                if can_update_pf %&& season_active
                     if isnan(last_valid_T_main_pf_C(i))
                         delta_T_main_change_pf = 0;
                     else
@@ -291,7 +310,6 @@ for network = networks
                                     house_id, string(time), innovation, hard_innovation_gate_C);
                             end
                         else
-                            gate_accept_count_pf = gate_accept_count_pf + 1;
                             x_before = pf_states{i}.x;
 
                             [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
@@ -299,21 +317,39 @@ for network = networks
                             if any(isnan(est_pf), 'all') || any(isnan(cov_pf), 'all')
                                 warning('PF returned NaN for house %d at %s', house_id, string(time));
                             else
-                                pf_states{i}.x = est_pf;
-                                pf_states{i}.P = cov_pf;
-                                pf_offsets(i) = pf_states{i}.x(1);
-                                log_pf = true;
-                                last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
-
+                                % --- NIS gate: revert if update quality is poor ---
+                                nis_value = NaN;
                                 if isfield(diagnostics_pf, 'P_zz') && isfinite(diagnostics_pf.P_zz) && diagnostics_pf.P_zz > 0
-                                    pf_innovation_gate(i) = max(1, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
-                                else
-                                    warning('Invalid PF P_zz for house %d at %s', house_id, string(time));
+                                    if isfield(diagnostics_pf, 'y') && isfinite(diagnostics_pf.y)
+                                        nis_value = (diagnostics_pf.y^2) / diagnostics_pf.P_zz;
+                                    end
                                 end
-                                if debug_print_update_result
-                                    fprintf('PF  UPDATE | house %d | time %s | innov=%.3f | dx=[%.4f %.6f]\n', ...
-                                        house_id, string(time), innovation, ...
-                                        pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
+                                
+                                if isfinite(nis_value) && nis_value > max_nis
+                                    % Revert state — keep old particles and state
+                                    pf_states{i}.x = x_before;
+                                    gate_reject_count_pf = gate_reject_count_pf + 1;
+                                    if debug_print_update_result
+                                        fprintf('PF  NIS REJECT | house %d | time %s | NIS=%.2f > %.1f | innov=%.3f\n', ...
+                                            house_id, string(time), nis_value, max_nis, diagnostics_pf.y);
+                                    end
+                                else
+                                    % Accept update
+                                    gate_accept_count_pf = gate_accept_count_pf + 1;
+                                    pf_states{i}.x = est_pf;
+                                    pf_states{i}.P = cov_pf;
+                                    pf_offsets(i) = pf_states{i}.x(1);
+                                    log_pf = true;
+                                    last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
+
+                                    if isfield(diagnostics_pf, 'P_zz') && isfinite(diagnostics_pf.P_zz) && diagnostics_pf.P_zz > 0
+                                        pf_innovation_gate(i) = max(1, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
+                                    end
+                                    if debug_print_update_result
+                                        fprintf('PF  UPDATE | house %d | time %s | NIS=%.2f | innov=%.3f | dx=[%.4f %.6f]\n', ...
+                                            house_id, string(time), nis_value, diagnostics_pf.y, ...
+                                            pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
+                                    end
                                 end
                             end
                         end
@@ -375,7 +411,7 @@ for network = networks
                 
                 % Count updates in window and compute dynamic threshold
                 updates_in_window = sum(isfinite(recent_nis));
-                min_updates_in_window = season_min_update_rate * num_houses_csac * window_size;
+                min_updates_in_window = season_min_update_rate * window_size;
                 
                 % Determine if conditions are degraded (dual criterion)
                 is_nis_bad = ~isempty(recent_nis_valid) && median(recent_nis_valid) > season_nis_threshold;
@@ -470,7 +506,7 @@ for network = networks
             %% ============================================================
             %% MASTER OFFSET APPLICATION (skip if season inactive)
             %% ============================================================
-            if season_active
+            if true %season_active
                 if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
                     damped_ukf_offset = master_offset_gamma * ukf_master_offset;
                     for i = 1:num_houses_csac

@@ -45,6 +45,7 @@
       "max_air_temperature": 50,
       "min_active_houses": 3,
       "max_innovation_C": 2,
+      "max_nis": 5.0,
       "modify_mean_offset": true,
       "max_delta_T_change_rate": 3.0,
       "innovation_gate_N_sigma": 3.0,
