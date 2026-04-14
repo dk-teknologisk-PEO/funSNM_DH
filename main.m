@@ -520,17 +520,22 @@ for network = networks
             %% MASTER OFFSET APPLICATION
             %% ============================================================
             if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
-                damped_ukf_offset = master_offset_gamma * ukf_master_offset;
-                for i = 1:num_houses_csac
-                    ukf_states{i}.x(1) = ukf_states{i}.x(1) - damped_ukf_offset;
+                % Only apply master offset when enough houses contributed
+                if num_active_houses >= min_active_houses
+                    damped_ukf_offset = master_offset_gamma * ukf_master_offset;
+                    for i = 1:num_houses_csac
+                        ukf_states{i}.x(1) = ukf_states{i}.x(1) - damped_ukf_offset;
+                    end
                 end
             end
 
             if ~isnan(pf_master_offset) && abs(pf_master_offset) > master_offset_deadzone
-                damped_pf_offset = master_offset_gamma * pf_master_offset;
-                for i = 1:num_houses_csac
-                    pf_states{i}.x(1) = pf_states{i}.x(1) - damped_pf_offset;
-                    pf_particles{i}(1,:) = pf_particles{i}(1,:) - damped_pf_offset;
+                if num_active_houses >= min_active_houses
+                    damped_pf_offset = master_offset_gamma * pf_master_offset;
+                    for i = 1:num_houses_csac
+                        pf_states{i}.x(1) = pf_states{i}.x(1) - damped_pf_offset;
+                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - damped_pf_offset;
+                    end
                 end
             end
 
