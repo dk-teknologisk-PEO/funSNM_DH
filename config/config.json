@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "time": {
       "start": "2018-01-05T00:00:00",
-      "end": "2018-06-30T23:59:59"
+      "end": "2020-12-31T23:59:59"
     },
     "location": {
       "city": "Aalborg"
@@ -20,7 +20,7 @@
       "weather": "data/weather/"
     },
     "cutoff": {
-      "alpha_min":0.2,
+      "alpha_min": 0.2,
       "flow_cutoff": 20,
       "flow_cutoff_high": 100,
       "flow_cutoff_low": 50,
@@ -61,6 +61,11 @@
       "P_inflation_factor": 0.5,
       "min_update_rate": 0.25,
       "warmup_days": 30
+    },
+    "heating_season_gate": {
+      "T_air_max_threshold": 10.0,
+      "lookback_days": 7,
+      "P_restart_fraction": 0.5
     },
     "master_offset": {
       "gamma": 0.1,
