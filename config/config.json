@@ -63,9 +63,11 @@
       "warmup_days": 30
     },
     "heating_season_gate": {
-      "T_air_max_threshold": 10.0,
-      "lookback_days": 7,
-      "P_restart_fraction": 0.5
+      "T_air_max_threshold": 8.0,
+      "lookback_days": 10,
+      "P_restart_fraction": 0.5,
+      "min_cooldown_days": 90,
+      "min_season_days_for_cooldown": 45
     },
     "master_offset": {
       "gamma": 0.1,
