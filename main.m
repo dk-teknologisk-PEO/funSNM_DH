@@ -90,29 +90,6 @@ fprintf('  Built daily T_air_max table: %d days (%.1f to %.1f °C)\n', ...
     min(daily_T_air_max_table.T_air_max), ...
     max(daily_T_air_max_table.T_air_max));
 
-% --- Helper function: check if heating season is active ---
-    function [is_active, recent_max_temps, n_valid] = check_heating_season_gate(...
-            current_date, lookback_days, threshold, daily_T_air_max_tbl)
-        
-        recent_max_temps = nan(lookback_days, 1);
-        for d = 0:(lookback_days - 1)
-            check_date = current_date - days(d);
-            row_idx = find(daily_T_air_max_tbl.date == check_date, 1);
-            if ~isempty(row_idx)
-                recent_max_temps(d + 1) = daily_T_air_max_tbl.T_air_max(row_idx);
-            end
-        end
-        
-        n_valid = sum(isfinite(recent_max_temps));
-        
-        if n_valid < lookback_days
-            is_active = false;
-            return;
-        end
-        
-        % ALL days in the lookback window must be below threshold
-        is_active = all(recent_max_temps(isfinite(recent_max_temps)) < threshold);
-    end
 
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf');
 output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf');
