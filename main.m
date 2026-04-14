@@ -88,6 +88,8 @@ fprintf('  Built daily T_air_max table: %d days (%.1f to %.1f °C)\n', ...
     min(daily_T_air_max_table.T_air_max), ...
     max(daily_T_air_max_table.T_air_max));
 
+
+
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf');
 output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf');
 w = waitbar(0.0, "Starting analysis");
@@ -158,14 +160,10 @@ for network = networks
 
         % === HEATING SEASON STATE TRACKING ===
         season_active = false;  % Start inactive — wait for gate to confirm
-        was_season_active = false;  % Track transitions
+        was_season_active = false;
         season_end_timestep = NaN;
         season_start_timestep = NaN;
-        season_count = 0;  % Number of heating seasons started
-        degraded_day_count = 0;
-        good_day_count = 0;
-        nis_history = nan(1, season_window_days * 6);
-        nis_history_idx = 0;
+        season_count = 0;
         
         % Snapshot of last known good states
         ukf_states_snapshot = cell(size(ukf_states));
@@ -223,10 +221,6 @@ for network = networks
                     season_active = true;
                     season_count = season_count + 1;
                     season_start_timestep = t;
-                    degraded_day_count = 0;
-                    good_day_count = 0;
-                    nis_history_idx = 0;
-                    nis_history = nan(1, season_window_days * 6);
                     
                     fprintf('\n*** CSAC %d: HEATING SEASON #%d START at %s (timestep %d) ***\n', ...
                         csac, season_count, string(time), t);
@@ -240,10 +234,6 @@ for network = networks
                         fprintf('    First season — using initial P (cold start)\n');
                     else
                         % Subsequent season: inflate P from snapshot
-                        % Use a fraction between current P and P_base
-                        % P_restart = P_snapshot + fraction * (P_base - P_snapshot)
-                        % This gives more uncertainty than the converged state
-                        % but less than a full cold start
                         fprintf('    Restarting from snapshot (timestep %d)\n', snapshot_timestep);
                         for i = 1:num_houses_csac
                             % Restore point estimates from snapshot
@@ -338,10 +328,6 @@ for network = networks
             logger_ukf.timestamps(t) = time;
             logger_pf.timestamps(t) = time;
 
-            % === Per-timestep tracking for NIS-based secondary safety ===
-            log_ukf_flags = false(1, num_houses_csac);
-            diagnostics_ukf_all = cell(1, num_houses_csac);
-
             for i = 1:num_houses_csac
                 log_ukf = false;
                 log_pf = false;
@@ -417,8 +403,6 @@ for network = networks
                                     gate_accept_count_ukf = gate_accept_count_ukf + 1;
                                     ukf_offsets(i) = ukf_states{i}.x(1);
                                     log_ukf = true;
-                                    log_ukf_flags(i) = true;
-                                    diagnostics_ukf_all{i} = diagnostics_ukf;
                                     last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
                                     last_update_timestamp_ukf(i) = time;
                                     
@@ -522,97 +506,14 @@ for network = networks
             end
 
             %% ============================================================
-            %% NIS-BASED SECONDARY SAFETY (within active season)
+            %% SNAPSHOT UPDATE (always update during active season)
             %% ============================================================
-            
-            % Collect NIS values from this timestep
-            timestep_nis_values = [];
-            timestep_update_count = sum(log_ukf_flags);
+            snapshot_timestep = t;
             for i = 1:num_houses_csac
-                if log_ukf_flags(i) && ~isempty(diagnostics_ukf_all{i})
-                    if isfield(diagnostics_ukf_all{i}, 'nis') && isfinite(diagnostics_ukf_all{i}.nis)
-                        timestep_nis_values(end+1) = diagnostics_ukf_all{i}.nis;
-                    end
-                end
-            end
-            
-            % Track rolling history
-            nis_history_idx = nis_history_idx + 1;
-            if nis_history_idx > length(nis_history)
-                nis_history = [nis_history, nan(1, 100)];
-            end
-            
-            if ~isempty(timestep_nis_values)
-                nis_history(nis_history_idx) = mean(timestep_nis_values);
-            else
-                nis_history(nis_history_idx) = NaN;
-            end
-            
-            % Evaluate NIS-based safety only after warmup within current season
-            warmup_timesteps = season_warmup_days * 4;
-            timesteps_since_season_start = t - season_start_timestep + 1;
-            
-            if timesteps_since_season_start > warmup_timesteps
-                
-                active_fraction = timestep_update_count / num_houses_csac;
-                window_size = min(nis_history_idx, season_window_days * 4);
-                window_start = max(1, nis_history_idx - window_size + 1);
-                recent_nis = nis_history(window_start:nis_history_idx);
-                recent_nis_valid = recent_nis(isfinite(recent_nis));
-                
-                updates_in_window = sum(isfinite(recent_nis));
-                min_updates_in_window = season_min_update_rate * window_size;
-                
-                is_nis_bad = ~isempty(recent_nis_valid) && median(recent_nis_valid) > season_nis_threshold;
-                is_updates_low = updates_in_window < min_updates_in_window;
-                is_degraded = is_nis_bad || is_updates_low;
-                
-                if is_degraded
-                    degraded_day_count = degraded_day_count + 1;
-                    if degraded_day_count >= season_consec_bad_to_end
-                        % === NIS SAFETY TRIGGERED ===
-                        fprintf('\n*** CSAC %d: NIS SAFETY TRIGGER at timestep %d (%s) ***\n', ...
-                            csac, t, string(time));
-                        fprintf('    NIS_bad=%d (median=%.2f), Updates_low=%d (%d/%d)\n', ...
-                            is_nis_bad, ...
-                            ifelse(~isempty(recent_nis_valid), median(recent_nis_valid), NaN), ...
-                            is_updates_low, updates_in_window, round(min_updates_in_window));
-                        fprintf('    Reverting to snapshot from timestep %d\n', snapshot_timestep);
-                        
-                        % Revert to snapshot
-                        for i = 1:num_houses_csac
-                            ukf_states{i}.x = ukf_states_snapshot{i}.x;
-                            ukf_states{i}.P = ukf_states_snapshot{i}.P;
-                            pf_states{i}.x = pf_states_snapshot{i}.x;
-                            pf_states{i}.P = pf_states_snapshot{i}.P;
-                        end
-                        
-                        % End season early
-                        season_active = false;
-                        season_end_timestep = t;
-                        degraded_day_count = 0;
-                    end
-                else
-                    degraded_day_count = 0;
-                    
-                    % Update snapshot — conditions are good
-                    snapshot_timestep = t;
-                    for i = 1:num_houses_csac
-                        ukf_states_snapshot{i}.x = ukf_states{i}.x;
-                        ukf_states_snapshot{i}.P = ukf_states{i}.P;
-                        pf_states_snapshot{i}.x = pf_states{i}.x;
-                        pf_states_snapshot{i}.P = pf_states{i}.P;
-                    end
-                end
-            else
-                % During warmup: always update snapshot
-                snapshot_timestep = t;
-                for i = 1:num_houses_csac
-                    ukf_states_snapshot{i}.x = ukf_states{i}.x;
-                    ukf_states_snapshot{i}.P = ukf_states{i}.P;
-                    pf_states_snapshot{i}.x = pf_states{i}.x;
-                    pf_states_snapshot{i}.P = pf_states{i}.P;
-                end
+                ukf_states_snapshot{i}.x = ukf_states{i}.x;
+                ukf_states_snapshot{i}.P = ukf_states{i}.P;
+                pf_states_snapshot{i}.x = pf_states{i}.x;
+                pf_states_snapshot{i}.P = pf_states{i}.P;
             end
 
             %% ============================================================
@@ -684,7 +585,6 @@ close(w);
 disp('Analysis complete. All diagnostic plots have been saved.')
 
 % --- Helper function: check if heating season is active ---
-% Returns true if ALL of the last N days had T_air_max < threshold
     function [is_active, recent_max_temps, n_valid] = check_heating_season_gate(...
             current_date, lookback_days, threshold, daily_T_air_max_tbl)
         
@@ -700,7 +600,6 @@ disp('Analysis complete. All diagnostic plots have been saved.')
         n_valid = sum(isfinite(recent_max_temps));
         
         if n_valid < lookback_days
-            % Not enough data — be conservative, assume not active
             is_active = false;
             return;
         end
