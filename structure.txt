@@ -1,0 +1,40 @@
+main.m                        
+├── config/
+│   └── config.json
+├── src/
+│   ├── data_handling/
+│   │   ├── importData.m
+│   │   └── soilTemp.m
+│   ├── kalman_filter/
+│   │   ├── initialize_kalman_filter.m
+│   │   ├── update_ukf_house.m          (core UKF math)
+│   │   ├── run_ukf_update.m
+│   │   └── generate_sigma_points.m
+│   ├── particle_filter/
+│   │   ├── initialize_pf_state.m
+│   │   ├── update_pf_house.m           (core PF math)
+│   │   └── run_pf_update.m
+│   ├── network_model/
+│   │   ├── calculate_main_pipe_temp.m
+│   │   ├── get_supply_temp.m
+│   │   └── get_main_temp.m
+│   ├── gates/
+│   │   ├── flow_validity_gate.m
+│   │   ├── check_heating_season_gate.m
+│   │   └── evaluate_season_transition.m
+│   ├── processing/
+│   │   ├── load_config.m
+│   │   ├── precompute_daily_T_air_max.m
+│   │   ├── initialize_csac.m
+│   │   ├── process_timestep.m
+│   │   └── apply_master_offset.m
+│   └── diagnostics/
+│       ├── initialize_logger.m
+│       ├── update_logger.m
+│       ├── plot_diagnostics.m
+│       ├── save_logger_to_csv.m
+│       ├── save_diagnostic_summary.m
+│       ├── save_diagnostic_summary_detailed.m
+│       ├── save_daily_diagnostics.m
+│       ├── print_csac_statistics.m
+│       └── save_all_csac_results.m
