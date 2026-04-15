@@ -133,7 +133,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Add measurement noise
     P_zz = P_zz + state.R;
     
-%% 5. State and Covariance Update
+    %% 5. State and Covariance Update
     
     % Calculate Kalman Gain
     K = P_xz / P_zz;
@@ -144,29 +144,41 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % Compute unlimited update
     dx_unlimited = K * y;
     
-    % Step size limiter — apply per component
+    % Step size limiter
     max_dx = [0.15; 0.01];
     dx = dx_unlimited;
-    gain_scales = ones(2, 1);
+    was_limited = false;
     for idx = 1:length(dx)
         if abs(dx(idx)) > max_dx(idx)
-            gain_scales(idx) = max_dx(idx) / abs(dx_unlimited(idx));
             dx(idx) = sign(dx(idx)) * max_dx(idx);
+            was_limited = true;
         end
     end
     
     % Update state
     x_new = x_pred + dx;
     
-    % Update covariance consistently
-    % Scale each row of K by its own gain scale
-    K_effective = K .* gain_scales;  % Element-wise: each row scaled independently
-    P_new = P_pred - K_effective * P_zz * K_effective';
+    % Update covariance — use a CONSISTENT approach
+    if was_limited
+        % When step is limited, the effective gain is smaller than K.
+        % Scale K down proportionally to maintain P consistency.
+        scale = ones(2, 1);
+        for idx = 1:length(dx_unlimited)
+            if abs(dx_unlimited(idx)) > 1e-12
+                scale(idx) = dx(idx) / dx_unlimited(idx);
+            end
+        end
+        gain_scale = min(abs(scale));
+        K_effective = K * gain_scale;
+        P_new = P_pred - K_effective * P_zz * K_effective';
+    else
+        P_new = P_pred - K * P_zz * K';
+    end
     
     % Ensure symmetry and positive definiteness
     P_new = (P_new + P_new') / 2;
-    P_new(1,1) = max(P_new(1,1), P_floor_offset);
-    P_new(2,2) = max(P_new(2,2), P_floor_U);
+    P_new(1,1) = max(P_new(1,1), 1e-10);
+    P_new(2,2) = max(P_new(2,2), 1e-10);
     
     % Apply physical constraints to the state
     offset_min = config.project.cutoff.offset_min;
@@ -177,7 +189,6 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     x_new(1) = max(min(x_new(1), offset_max), offset_min);
     x_new(2) = max(min(x_new(2), U_max), U_min);
 
-    
     %% 6. Pack Results into State Struct
     state.x = x_new;
     state.P = P_new;
