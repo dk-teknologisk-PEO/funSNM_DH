@@ -86,4 +86,10 @@ function csac_state = initialize_csac(topology, meter_data, csac, params, timest
     % Loggers
     csac_state.logger_ukf = initialize_logger(num_houses, length(timestamps), house_ids);
     csac_state.logger_pf = initialize_logger(num_houses, length(timestamps), house_ids);
+
+    % Pre-fill with NaN so carry-forward works from timestep 1
+    csac_state.logger_ukf.state_estimates(:,:,:) = NaN;
+    csac_state.logger_ukf.covariance_posterior(:,:,:) = NaN;
+    csac_state.logger_pf.state_estimates(:,:,:) = NaN;
+    csac_state.logger_pf.covariance_posterior(:,:,:) = NaN;
 end
