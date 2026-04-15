@@ -226,26 +226,33 @@ for network = networks
                 was_season_active = season_active;
                 
                 if gate_is_active && ~was_season_active
-                    % === Check cooldown before allowing restart ===
+                % === Check cooldown before allowing restart ===
                     allow_restart = true;
                     
                     % Cooldown is based on last REAL season end, not short spurious ones
                     if cooldown_active && ~isnat(last_real_season_end_date)
                         days_since_real_end = days(current_date - last_real_season_end_date);
-                        % Only enforce cooldown in spring/summer (Apr-Sep)
                         current_month = month(current_date);
                         is_winter_month = (current_month >= 10) || (current_month <= 3);
                         
-                        if ~is_winter_month && days_since_real_end < season_gate_min_cooldown_days
+                        if days_since_real_end >= season_gate_min_cooldown_days
+                            % Full cooldown elapsed — clear it permanently
+                            cooldown_active = false;
+                            fprintf('    Cooldown expired (%d days since %s)\n', ...
+                                round(days_since_real_end), string(last_real_season_end_date));
+                        elseif is_winter_month
+                            % Winter month — allow restart but KEEP cooldown active
+                            % (so it still blocks spring restarts later)
+                            fprintf('    Cooldown bypassed (winter month %d), cooldown remains active\n', ...
+                                current_month);
+                        else
+                            % Spring/summer and cooldown hasn't elapsed — block
                             allow_restart = false;
                             if mod(season_gate_inactive_days, 30) == 1
                                 fprintf('    CSAC %d: Cooldown active — %d/%d days since real season end at %s\n', ...
                                     csac, round(days_since_real_end), season_gate_min_cooldown_days, ...
                                     string(last_real_season_end_date));
                             end
-                        else
-                            % Cooldown period has elapsed or we're in winter — clear it
-                            cooldown_active = false;
                         end
                     end
                     
