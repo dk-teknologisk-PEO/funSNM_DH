@@ -31,6 +31,8 @@ season_gate_lookback_days = config.project.heating_season_gate.lookback_days;
 season_gate_P_restart_fraction = config.project.heating_season_gate.P_restart_fraction;
 season_gate_min_cooldown_days = config.project.heating_season_gate.min_cooldown_days;
 season_gate_min_season_for_cooldown = config.project.heating_season_gate.min_season_days_for_cooldown;
+season_gate_gap_P_growth_offset = config.project.heating_season_gate.gap_P_growth_per_day_offset;
+season_gate_gap_P_growth_U = config.project.heating_season_gate.gap_P_growth_per_day_U;
 
 % --- MASTER OFFSET SETTINGS (from config) ---
 master_offset_gamma = config.project.master_offset.gamma;
@@ -75,11 +77,9 @@ networks = config.project.datasets.datasets;
 %% ============================================================
 fprintf('Pre-computing daily T_air_max lookup table...\n');
 
-% Extract unique dates from air temperature data
 T_air_C.date = dateshift(T_air_C.time, 'start', 'day');
 [air_date_groups, air_unique_dates] = findgroups(T_air_C.date);
 
-% Compute daily max air temperature
 daily_T_air_max_values = splitapply(@max, T_air_C.values, air_date_groups);
 daily_T_air_max_table = table(air_unique_dates, daily_T_air_max_values, ...
     'VariableNames', {'date', 'T_air_max'});
@@ -89,7 +89,6 @@ fprintf('  Built daily T_air_max table: %d days (%.1f to %.1f °C)\n', ...
     height(daily_T_air_max_table), ...
     min(daily_T_air_max_table.T_air_max), ...
     max(daily_T_air_max_table.T_air_max));
-
 
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf');
 output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf');
@@ -166,8 +165,14 @@ for network = networks
         season_start_timestep = NaN;
         season_start_date = NaT;
         season_count = 0;
-        last_season_end_date = NaT;
+        
+        % Cooldown tracking — references the last REAL season only
+        last_real_season_end_date = NaT;
         last_season_duration_days = 0;
+        cooldown_active = false;
+        
+        % Track when the filter last had an active day (for gap-based P growth)
+        last_active_date = NaT;
         
         % Snapshot of last known good states
         ukf_states_snapshot = cell(size(ukf_states));
@@ -224,19 +229,23 @@ for network = networks
                     % === Check cooldown before allowing restart ===
                     allow_restart = true;
                     
-                    if ~isnat(last_season_end_date) && last_season_duration_days >= season_gate_min_season_for_cooldown
-                        days_since_end = days(current_date - last_season_end_date);
+                    % Cooldown is based on last REAL season end, not short spurious ones
+                    if cooldown_active && ~isnat(last_real_season_end_date)
+                        days_since_real_end = days(current_date - last_real_season_end_date);
                         % Only enforce cooldown in spring/summer (Apr-Sep)
-                        % Allow quick restarts during winter months (Oct-Mar)
                         current_month = month(current_date);
                         is_winter_month = (current_month >= 10) || (current_month <= 3);
                         
-                        if ~is_winter_month && days_since_end < season_gate_min_cooldown_days
+                        if ~is_winter_month && days_since_real_end < season_gate_min_cooldown_days
                             allow_restart = false;
                             if mod(season_gate_inactive_days, 30) == 1
-                                fprintf('    CSAC %d: Cooldown active — %d/%d days since season end (ran %d days)\n', ...
-                                    csac, round(days_since_end), season_gate_min_cooldown_days, last_season_duration_days);
+                                fprintf('    CSAC %d: Cooldown active — %d/%d days since real season end at %s\n', ...
+                                    csac, round(days_since_real_end), season_gate_min_cooldown_days, ...
+                                    string(last_real_season_end_date));
                             end
+                        else
+                            % Cooldown period has elapsed or we're in winter — clear it
+                            cooldown_active = false;
                         end
                     end
                     
@@ -257,26 +266,41 @@ for network = networks
                         if season_count == 1
                             fprintf('    First season — using initial P (cold start)\n');
                         else
-                            fprintf('    Restarting from snapshot (timestep %d)\n', snapshot_timestep);
+                            % --- Gap-proportional P inflation ---
+                            % Instead of jumping to a fixed restart P, grow P
+                            % proportionally to how long the gap was
+                            if ~isnat(last_active_date)
+                                gap_days = days(current_date - last_active_date);
+                            else
+                                gap_days = 0;
+                            end
+                            
+                            fprintf('    Restarting from snapshot (timestep %d), gap = %d days\n', ...
+                                snapshot_timestep, gap_days);
+                            
                             for i = 1:num_houses_csac
+                                % Restore point estimates from snapshot
                                 ukf_states{i}.x = ukf_states_snapshot{i}.x;
                                 pf_states{i}.x = pf_states_snapshot{i}.x;
                                 
+                                % Grow P proportionally to gap duration
                                 P_snap = ukf_states_snapshot{i}.P;
-                                P_restart = P_snap + season_gate_P_restart_fraction * (P_base - P_snap);
-                                P_restart(1,1) = min(P_restart(1,1), P_base(1,1));
-                                P_restart(2,2) = min(P_restart(2,2), P_base(2,2));
-                                P_restart(1,1) = max(P_restart(1,1), P_snap(1,1));
-                                P_restart(2,2) = max(P_restart(2,2), P_snap(2,2));
+                                P_grown = P_snap;
+                                P_grown(1,1) = P_snap(1,1) + (season_gate_gap_P_growth_offset^2) * gap_days;
+                                P_grown(2,2) = P_snap(2,2) + (season_gate_gap_P_growth_U^2) * gap_days;
                                 
-                                ukf_states{i}.P = P_restart;
-                                pf_states{i}.P = P_restart;
+                                % Cap at P_base (never more uncertain than cold start)
+                                P_grown(1,1) = min(P_grown(1,1), P_base(1,1));
+                                P_grown(2,2) = min(P_grown(2,2), P_base(2,2));
+                                
+                                ukf_states{i}.P = P_grown;
+                                pf_states{i}.P = P_grown;
                                 
                                 if i == 1
-                                    fprintf('    House %d: P_snap=[%.4f, %.6f], P_restart=[%.4f, %.6f], P_base=[%.4f, %.6f]\n', ...
+                                    fprintf('    House %d: P_snap=[%.4f, %.6f], P_grown=[%.4f, %.6f], P_base=[%.4f, %.6f]\n', ...
                                         houses_csac_ids(i), ...
                                         sqrt(P_snap(1,1)), sqrt(P_snap(2,2)), ...
-                                        sqrt(P_restart(1,1)), sqrt(P_restart(2,2)), ...
+                                        sqrt(P_grown(1,1)), sqrt(P_grown(2,2)), ...
                                         sqrt(P_base(1,1)), sqrt(P_base(2,2)));
                                 end
                             end
@@ -287,7 +311,6 @@ for network = networks
                     % === SEASON END (gate-based) ===
                     season_active = false;
                     season_end_timestep = t;
-                    last_season_end_date = current_date;
                     
                     % Calculate how long this season ran
                     if ~isnat(season_start_date)
@@ -302,7 +325,7 @@ for network = networks
                         season_gate_T_air_max_threshold, ...
                         strjoin(arrayfun(@(x) sprintf('%.1f', x), recent_temps(isfinite(recent_temps)), 'UniformOutput', false), ', '));
                     
-                    % Only save snapshot if season ran long enough to be meaningful
+                    % Only save snapshot and activate cooldown if season was long enough
                     if last_season_duration_days >= season_gate_min_season_for_cooldown
                         for i = 1:num_houses_csac
                             ukf_states_snapshot{i}.x = ukf_states{i}.x;
@@ -311,10 +334,20 @@ for network = networks
                             pf_states_snapshot{i}.P = pf_states{i}.P;
                         end
                         snapshot_timestep = t;
-                        fprintf('    Snapshot saved at timestep %d (season was long enough)\n', t);
+                        
+                        % Activate cooldown — anchored to THIS real season's end
+                        last_real_season_end_date = current_date;
+                        cooldown_active = true;
+                        
+                        fprintf('    Snapshot saved at timestep %d (real season, cooldown activated)\n', t);
                     else
+                        % Short season — don't save snapshot, don't reset cooldown
                         fprintf('    Snapshot NOT saved (season only ran %d days < %d minimum)\n', ...
                             last_season_duration_days, season_gate_min_season_for_cooldown);
+                        if cooldown_active
+                            fprintf('    Cooldown still active from real season ending %s\n', ...
+                                string(last_real_season_end_date));
+                        end
                     end
                 end
                 
@@ -340,6 +373,9 @@ for network = networks
                 logger_pf.timestamps(t) = time;
                 continue;  % Skip to next timestep
             end
+            
+            % Track last active date for gap calculation
+            last_active_date = current_date;
 
             %% ============================================================
             %% ACTIVE SEASON: Normal processing continues below
@@ -600,6 +636,9 @@ for network = networks
         fprintf('Heating seasons started: %d\n', season_count);
         if ~isnan(season_end_timestep)
             fprintf('Last season ended at timestep %d\n', season_end_timestep);
+        end
+        if cooldown_active
+            fprintf('Cooldown active from real season ending %s\n', string(last_real_season_end_date));
         end
         fprintf('=====================================\n\n');
 
