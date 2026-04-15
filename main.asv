@@ -91,6 +91,7 @@ fprintf('  Built daily T_air_max table: %d days (%.1f to %.1f °C)\n', ...
     max(daily_T_air_max_table.T_air_max));
 
 
+
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf');
 output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf');
 w = waitbar(0.0, "Starting analysis");
@@ -160,12 +161,12 @@ for network = networks
         pf_offsets = nan([num_houses_csac,1]);
 
         % === HEATING SEASON STATE TRACKING ===
-        season_active = false;
+        season_active = false;  % Start inactive — wait for gate to confirm
         was_season_active = false;
         season_end_timestep = NaN;
         season_start_timestep = NaN;
-        season_start_date = NaT;
         season_count = 0;
+        
         last_season_end_date = NaT;
         last_season_duration_days = 0;
         
@@ -221,64 +222,48 @@ for network = networks
                 was_season_active = season_active;
                 
                 if gate_is_active && ~was_season_active
-                    % === Check cooldown before allowing restart ===
-                    allow_restart = true;
+                    % === SEASON START ===
+                    season_active = true;
+                    season_count = season_count + 1;
+                    season_start_timestep = t;
                     
-                    if ~isnat(last_season_end_date) && last_season_duration_days >= season_gate_min_season_for_cooldown
-                        days_since_end = days(current_date - last_season_end_date);
-                        % Only enforce cooldown in spring/summer (Apr-Sep)
-                        % Allow quick restarts during winter months (Oct-Mar)
-                        current_month = month(current_date);
-                        is_winter_month = (current_month >= 10) || (current_month <= 3);
-                        
-                        if ~is_winter_month && days_since_end < season_gate_min_cooldown_days
-                            allow_restart = false;
-                            if mod(season_gate_inactive_days, 30) == 1
-                                fprintf('    CSAC %d: Cooldown active — %d/%d days since season end (ran %d days)\n', ...
-                                    csac, round(days_since_end), season_gate_min_cooldown_days, last_season_duration_days);
-                            end
-                        end
-                    end
+                    fprintf('\n*** CSAC %d: HEATING SEASON #%d START at %s (timestep %d) ***\n', ...
+                        csac, season_count, string(time), t);
+                    fprintf('    Last %d days T_air_max: [%s] (all < %.0f°C)\n', ...
+                        season_gate_lookback_days, ...
+                        strjoin(arrayfun(@(x) sprintf('%.1f', x), recent_temps(isfinite(recent_temps)), 'UniformOutput', false), ', '), ...
+                        season_gate_T_air_max_threshold);
                     
-                    if allow_restart
-                        % === SEASON START ===
-                        season_active = true;
-                        season_count = season_count + 1;
-                        season_start_timestep = t;
-                        season_start_date = current_date;
-                        
-                        fprintf('\n*** CSAC %d: HEATING SEASON #%d START at %s (timestep %d) ***\n', ...
-                            csac, season_count, string(time), t);
-                        fprintf('    Last %d days T_air_max: [%s] (all < %.0f°C)\n', ...
-                            season_gate_lookback_days, ...
-                            strjoin(arrayfun(@(x) sprintf('%.1f', x), recent_temps(isfinite(recent_temps)), 'UniformOutput', false), ', '), ...
-                            season_gate_T_air_max_threshold);
-                        
-                        if season_count == 1
-                            fprintf('    First season — using initial P (cold start)\n');
-                        else
-                            fprintf('    Restarting from snapshot (timestep %d)\n', snapshot_timestep);
-                            for i = 1:num_houses_csac
-                                ukf_states{i}.x = ukf_states_snapshot{i}.x;
-                                pf_states{i}.x = pf_states_snapshot{i}.x;
-                                
-                                P_snap = ukf_states_snapshot{i}.P;
-                                P_restart = P_snap + season_gate_P_restart_fraction * (P_base - P_snap);
-                                P_restart(1,1) = min(P_restart(1,1), P_base(1,1));
-                                P_restart(2,2) = min(P_restart(2,2), P_base(2,2));
-                                P_restart(1,1) = max(P_restart(1,1), P_snap(1,1));
-                                P_restart(2,2) = max(P_restart(2,2), P_snap(2,2));
-                                
-                                ukf_states{i}.P = P_restart;
-                                pf_states{i}.P = P_restart;
-                                
-                                if i == 1
-                                    fprintf('    House %d: P_snap=[%.4f, %.6f], P_restart=[%.4f, %.6f], P_base=[%.4f, %.6f]\n', ...
-                                        houses_csac_ids(i), ...
-                                        sqrt(P_snap(1,1)), sqrt(P_snap(2,2)), ...
-                                        sqrt(P_restart(1,1)), sqrt(P_restart(2,2)), ...
-                                        sqrt(P_base(1,1)), sqrt(P_base(2,2)));
-                                end
+                    if season_count == 1
+                        % First season: use initial P (cold start)
+                        fprintf('    First season — using initial P (cold start)\n');
+                    else
+                        % Subsequent season: inflate P from snapshot
+                        fprintf('    Restarting from snapshot (timestep %d)\n', snapshot_timestep);
+                        for i = 1:num_houses_csac
+                            % Restore point estimates from snapshot
+                            ukf_states{i}.x = ukf_states_snapshot{i}.x;
+                            pf_states{i}.x = pf_states_snapshot{i}.x;
+                            
+                            % Inflate covariance: blend between snapshot P and P_base
+                            P_snap = ukf_states_snapshot{i}.P;
+                            P_restart = P_snap + season_gate_P_restart_fraction * (P_base - P_snap);
+                            % Ensure we don't exceed P_base
+                            P_restart(1,1) = min(P_restart(1,1), P_base(1,1));
+                            P_restart(2,2) = min(P_restart(2,2), P_base(2,2));
+                            % Ensure we don't go below snapshot
+                            P_restart(1,1) = max(P_restart(1,1), P_snap(1,1));
+                            P_restart(2,2) = max(P_restart(2,2), P_snap(2,2));
+                            
+                            ukf_states{i}.P = P_restart;
+                            pf_states{i}.P = P_restart;
+                            
+                            if i == 1
+                                fprintf('    House %d: P_snap=[%.4f, %.6f], P_restart=[%.4f, %.6f], P_base=[%.4f, %.6f]\n', ...
+                                    houses_csac_ids(i), ...
+                                    sqrt(P_snap(1,1)), sqrt(P_snap(2,2)), ...
+                                    sqrt(P_restart(1,1)), sqrt(P_restart(2,2)), ...
+                                    sqrt(P_base(1,1)), sqrt(P_base(2,2)));
                             end
                         end
                     end
@@ -287,35 +272,22 @@ for network = networks
                     % === SEASON END (gate-based) ===
                     season_active = false;
                     season_end_timestep = t;
-                    last_season_end_date = current_date;
                     
-                    % Calculate how long this season ran
-                    if ~isnat(season_start_date)
-                        last_season_duration_days = days(current_date - season_start_date);
-                    else
-                        last_season_duration_days = 0;
-                    end
-                    
-                    fprintf('\n*** CSAC %d: HEATING SEASON #%d END at %s (timestep %d, ran %d days) ***\n', ...
-                        csac, season_count, string(time), t, last_season_duration_days);
+                    fprintf('\n*** CSAC %d: HEATING SEASON #%d END at %s (timestep %d) ***\n', ...
+                        csac, season_count, string(time), t);
                     fprintf('    T_air_max exceeded %.0f°C in lookback window: [%s]\n', ...
                         season_gate_T_air_max_threshold, ...
                         strjoin(arrayfun(@(x) sprintf('%.1f', x), recent_temps(isfinite(recent_temps)), 'UniformOutput', false), ', '));
                     
-                    % Only save snapshot if season ran long enough to be meaningful
-                    if last_season_duration_days >= season_gate_min_season_for_cooldown
-                        for i = 1:num_houses_csac
-                            ukf_states_snapshot{i}.x = ukf_states{i}.x;
-                            ukf_states_snapshot{i}.P = ukf_states{i}.P;
-                            pf_states_snapshot{i}.x = pf_states{i}.x;
-                            pf_states_snapshot{i}.P = pf_states{i}.P;
-                        end
-                        snapshot_timestep = t;
-                        fprintf('    Snapshot saved at timestep %d (season was long enough)\n', t);
-                    else
-                        fprintf('    Snapshot NOT saved (season only ran %d days < %d minimum)\n', ...
-                            last_season_duration_days, season_gate_min_season_for_cooldown);
+                    % Save snapshot of current states
+                    for i = 1:num_houses_csac
+                        ukf_states_snapshot{i}.x = ukf_states{i}.x;
+                        ukf_states_snapshot{i}.P = ukf_states{i}.P;
+                        pf_states_snapshot{i}.x = pf_states{i}.x;
+                        pf_states_snapshot{i}.P = pf_states{i}.P;
                     end
+                    snapshot_timestep = t;
+                    fprintf('    Snapshot saved at timestep %d\n', t);
                 end
                 
                 % Track gate statistics
@@ -553,6 +525,7 @@ for network = networks
             %% MASTER OFFSET APPLICATION
             %% ============================================================
             if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
+                % Only apply master offset when enough houses contributed
                 if num_active_houses >= min_active_houses
                     damped_ukf_offset = master_offset_gamma * ukf_master_offset;
                     for i = 1:num_houses_csac
@@ -620,3 +593,27 @@ end
 
 close(w);
 disp('Analysis complete. All diagnostic plots have been saved.')
+
+% --- Helper function: check if heating season is active ---
+    function [is_active, recent_max_temps, n_valid] = check_heating_season_gate(...
+            current_date, lookback_days, threshold, daily_T_air_max_tbl)
+        
+        recent_max_temps = nan(lookback_days, 1);
+        for d = 0:(lookback_days - 1)
+            check_date = current_date - days(d);
+            row_idx = find(daily_T_air_max_tbl.date == check_date, 1);
+            if ~isempty(row_idx)
+                recent_max_temps(d + 1) = daily_T_air_max_tbl.T_air_max(row_idx);
+            end
+        end
+        
+        n_valid = sum(isfinite(recent_max_temps));
+        
+        if n_valid < lookback_days
+            is_active = false;
+            return;
+        end
+        
+        % ALL days in the lookback window must be below threshold
+        is_active = all(recent_max_temps(isfinite(recent_max_temps)) < threshold);
+    end
