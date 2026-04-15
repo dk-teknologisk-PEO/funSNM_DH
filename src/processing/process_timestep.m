@@ -8,16 +8,6 @@ function csac_state = process_timestep(csac_state, t, time, T_soil_C, T_air_C, .
     current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
     
     if isempty(current_data) || isempty(current_T_soil_C)
-        if t > 1
-            for i = 1:csac_state.num_houses
-                csac_state.logger_ukf.state_estimates(:, i, t) = csac_state.logger_ukf.state_estimates(:, i, t-1);
-                csac_state.logger_ukf.covariance_posterior(:, i, t) = csac_state.logger_ukf.covariance_posterior(:, i, t-1);
-                csac_state.logger_pf.state_estimates(:, i, t) = csac_state.logger_pf.state_estimates(:, i, t-1);
-                csac_state.logger_pf.covariance_posterior(:, i, t) = csac_state.logger_pf.covariance_posterior(:, i, t-1);
-            end
-        end
-        csac_state.logger_ukf.timestamps(t) = time;
-        csac_state.logger_pf.timestamps(t) = time;
         return;
     end
     
@@ -53,14 +43,6 @@ function csac_state = process_timestep(csac_state, t, time, T_soil_C, T_air_C, .
         params.absolute_flow_floor_kg_h, csac_state.pf_states);
     
     if all(isnan(T_junction_ukf_C)) || all(isnan(T_junction_pf_C))
-        if t > 1
-            for i = 1:csac_state.num_houses
-                csac_state.logger_ukf.state_estimates(:, i, t) = csac_state.logger_ukf.state_estimates(:, i, t-1);
-                csac_state.logger_ukf.covariance_posterior(:, i, t) = csac_state.logger_ukf.covariance_posterior(:, i, t-1);
-                csac_state.logger_pf.state_estimates(:, i, t) = csac_state.logger_pf.state_estimates(:, i, t-1);
-                csac_state.logger_pf.covariance_posterior(:, i, t) = csac_state.logger_pf.covariance_posterior(:, i, t-1);
-            end
-        end
         return;
     end
     
