@@ -187,6 +187,10 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
 
     P_new = P_pred - K * P_zz * K';
     P_new = (P_new + P_new') / 2; % ensure symmetry
+        
+    % Ensure positive definite — clamp negative diagonal elements
+    P_new(1,1) = max(P_new(1,1), 1e-10);
+    P_new(2,2) = max(P_new(2,2), 1e-10);
 
     %%% STEP 1.2: If step was limited, inflate covariance to signal
     %%% that the filter was overconfident
