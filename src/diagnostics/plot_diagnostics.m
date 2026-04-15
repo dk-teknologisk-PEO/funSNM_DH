@@ -3,14 +3,6 @@
 function plot_diagnostics(logger, ground_truth, csac_id, network_name, output_folder)
 % PLOT_DIAGNOSTICS Generates and saves a comprehensive diagnostic figure.
 
-    % Sanitize: remove complex values
-    if ~isreal(logger.state_estimates)
-        logger.state_estimates = real(logger.state_estimates);
-    end
-    if ~isreal(logger.covariance_posterior)
-        logger.covariance_posterior = real(logger.covariance_posterior);
-    end
-
     % Create a unique figure name
     fig_name = strcat('Diagnostics_Network_CSAC_', string(network_name),'_', string(csac_id));
     fig = figure('Name', fig_name, 'Position', [50, 50, 1600, 900], 'Visible', 'off');
