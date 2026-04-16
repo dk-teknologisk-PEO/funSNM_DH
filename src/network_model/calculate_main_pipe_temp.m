@@ -71,6 +71,13 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
     
     % Normalize weights
     fit_weights = weights(valid_houses_for_fit);
+
+    % Normalize weights
+    % Cap maximum weight to prevent any single house from dominating
+    max_weight_fraction = 0.35;  % No house contributes more than 35%
+    fit_weights = min(fit_weights, max_weight_fraction * sum(fit_weights));
+    
+    % Re-normalize after capping
     fit_weights = fit_weights / sum(fit_weights);
     
     opts = optimset('Display', 'off', 'TolX', 0.05, 'TolFun', 0.05, 'MaxIter', 200);
