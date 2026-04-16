@@ -595,9 +595,19 @@ for network = networks
             %% ============================================================
             %% MASTER OFFSET APPLICATION
             %% ============================================================
+            
+            % Count how many houses actually got updated this timestep
+            n_houses_updated_ukf = sum(ukf_offsets == ukf_offsets); % counts non-NaN (set this timestep)
+            % Actually we need to count from the per-house loop
+            % Use a simpler approach: only apply master offset if enough houses updated
+            
             if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
                 if num_active_houses >= min_active_houses
-                    damped_ukf_offset = master_offset_gamma * ukf_master_offset;
+                    % Additional guard: cap the master offset magnitude
+                    % Near season boundaries, bad T_main fits can produce large offsets
+                    max_master_offset = 0.5;  % Never shift all houses by more than 0.05°C per step
+                    clamped_offset = max(-max_master_offset, min(max_master_offset, ukf_master_offset));
+                    damped_ukf_offset = master_offset_gamma * clamped_offset;
                     for i = 1:num_houses_csac
                         ukf_states{i}.x(1) = ukf_states{i}.x(1) - damped_ukf_offset;
                     end
@@ -606,24 +616,12 @@ for network = networks
 
             if ~isnan(pf_master_offset) && abs(pf_master_offset) > master_offset_deadzone
                 if num_active_houses >= min_active_houses
-                    damped_pf_offset = master_offset_gamma * pf_master_offset;
+                    max_master_offset = 0.5;
+                    clamped_offset = max(-max_master_offset, min(max_master_offset, pf_master_offset));
+                    damped_pf_offset = master_offset_gamma * clamped_offset;
                     for i = 1:num_houses_csac
                         pf_states{i}.x(1) = pf_states{i}.x(1) - damped_pf_offset;
                         pf_particles{i}(1,:) = pf_particles{i}(1,:) - damped_pf_offset;
-                    end
-                end
-            end
-
-            if error_meaning && ~debug_disable_mean_centering
-                mean_ukf_offsets = mean(ukf_offsets, 'omitmissing');
-                mean_pf_offsets = mean(pf_offsets, 'omitmissing');
-                for i=1:num_houses_csac
-                    if (~isnan(mean_ukf_offsets) && ~isnan(ukf_states{i}.x(1)))
-                        ukf_states{i}.x(1)=ukf_states{i}.x(1)-mean_ukf_offsets;
-                    end
-                    if (~isnan(mean_pf_offsets) && ~isnan(pf_states{i}.x(1)))
-                        pf_states{i}.x(1)=pf_states{i}.x(1)-mean_pf_offsets;
-                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - mean_pf_offsets;
                     end
                 end
             end
