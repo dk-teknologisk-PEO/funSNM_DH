@@ -3,6 +3,9 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
 % A single optimization is performed to find the best inlet temperature and
 % a shared meter offset for the entire cul-de-sac.
 %
+% Houses are weighted by flow quality — high-flow houses contribute more
+% to the fit than low-flow houses near the cutoff threshold.
+%
 % If T_start_C is provided (measured inlet temperature), the optimization
 % is skipped and T_main is forward-simulated directly from that value.
 
@@ -42,15 +45,37 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
     T_main_C(~isfinite(T_main_C)) = NaN;
     current_data.T_main_C = T_main_C;
     
+    % --- Compute flow-based weights for each house ---
+    % Higher flow = more reliable T_main back-calculation
+    c = 4186;
+    weights = zeros(num_houses, 1);
+    for i = 1:num_houses
+        if current_data.flow_kg_h(i) >= flow_cutoff && isfinite(T_main_C(i))
+            flow_kg_s = current_data.flow_kg_h(i) / 3600;
+            theta = (u_service(i) * service_lengths_m(i)) / (2 * c);
+            if flow_kg_s > theta
+                alpha = (flow_kg_s - theta) / (flow_kg_s + theta);
+            else
+                alpha = 0;
+            end
+            % Weight is alpha squared — strongly favors high-flow houses
+            weights(i) = alpha^2;
+        end
+    end
+    
     % Global optimization
-    valid_houses_for_fit = find(isfinite(current_data.T_main_C));
+    valid_houses_for_fit = find(weights > 0);
     if numel(valid_houses_for_fit) < 2
         return;
     end
     
+    % Normalize weights
+    fit_weights = weights(valid_houses_for_fit);
+    fit_weights = fit_weights / sum(fit_weights);
+    
     opts = optimset('Display', 'off', 'TolX', 0.05, 'TolFun', 0.05, 'MaxIter', 200);
     
-    fun = @(params) main_temp_estimator_global(params, current_data, valid_houses_for_fit, current_T_soil_C, U_csac);
+    fun = @(params) main_temp_estimator_global_weighted(params, current_data, valid_houses_for_fit, fit_weights, current_T_soil_C, U_csac);
     default_start_T = max(T_main_C(valid_houses_for_fit));
     start_vector = [default_start_T, 0];
     
@@ -73,3 +98,4 @@ function [T_main_fit_C, master_offset_C] = calculate_main_pipe_temp(current_data
         end
     end
 end
+
