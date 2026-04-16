@@ -582,14 +582,23 @@ for network = networks
             end
 
             %% ============================================================
-            %% SNAPSHOT UPDATE (always update during active season)
+            %% SNAPSHOT UPDATE (only after season has run long enough)
             %% ============================================================
-            snapshot_timestep = t;
-            for i = 1:num_houses_csac
-                ukf_states_snapshot{i}.x = ukf_states{i}.x;
-                ukf_states_snapshot{i}.P = ukf_states{i}.P;
-                pf_states_snapshot{i}.x = pf_states{i}.x;
-                pf_states_snapshot{i}.P = pf_states{i}.P;
+            if ~isnat(season_start_date)
+                current_season_days = days(current_date - season_start_date);
+            else
+                current_season_days = 0;
+            end
+            
+            if current_season_days >= season_gate_min_season_for_cooldown
+                % Season is established — safe to update snapshot
+                snapshot_timestep = t;
+                for i = 1:num_houses_csac
+                    ukf_states_snapshot{i}.x = ukf_states{i}.x;
+                    ukf_states_snapshot{i}.P = ukf_states{i}.P;
+                    pf_states_snapshot{i}.x = pf_states{i}.x;
+                    pf_states_snapshot{i}.P = pf_states{i}.P;
+                end
             end
 
             %% ============================================================
