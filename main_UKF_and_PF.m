@@ -1,17 +1,8 @@
 % main.m
 % Clear workspace, add paths, set parameters
-
-% === CLEANUP FROM PREVIOUS RUNS ===
-close all force    % Close all figures including hidden ones
-fclose all;        % Close any open file handles
-if exist('w', 'var') && isvalid(w)
-    close(w);      % Close any lingering waitbar
-end
-diary off;         % Stop any active diary
 clear all
 close all
 clc
-java.lang.System.gc();  % Force Java garbage collection (MATLAB GUI uses Java)
 
 addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
 
@@ -57,6 +48,9 @@ R_base = config.project.initialization.ukf.measurement_noise^2;
 Q_base = diag([(config.project.initialization.ukf.process_noise_offset)^2, (config.project.initialization.ukf.process_noise_U)^2]);
 P_base = diag([(config.project.initialization.ukf.state_uncertainty_offset)^2, (config.project.initialization.ukf.state_uncertainty_U)^2]);
 innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_offset * config.project.initialization.innovation_gate_N_sigma;
+
+% pf-configuration
+num_particles = config.project.initialization.pf.num_particles;
 
 % gating configuration
 absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
@@ -131,35 +125,38 @@ for network = networks
 
         % initialize filters for each house
         ukf_states = cell(1, num_houses_csac);
+        pf_particles = cell(1, num_houses_csac);
+        pf_states = cell(1, num_houses_csac);
         ukf_innovation_gate = nan([1,num_houses_csac]);
+        pf_innovation_gate = nan([1,num_houses_csac]);
         
         last_valid_T_main_ukf_C = nan(num_houses_csac,1);
+        last_valid_T_main_pf_C = nan(num_houses_csac,1);
         last_update_timestamp_ukf = NaT(num_houses_csac,1);
+        last_update_timestamp_pf = NaT(num_houses_csac,1);
 
         % Gate statistics
         gate_reject_count_ukf = 0;
+        gate_reject_count_pf = 0;
         gate_accept_count_ukf = 0;
+        gate_accept_count_pf = 0;
 
         for i = 1:num_houses_csac
             x_init = [randn()*0.3; 0.12 + randn()*0.03];
             ukf_states{i} = initialize_kalman_filter(x_init, Q_base, R_base, P_base);
+            pf_particles{i} = initialize_pf_state(num_particles, x_init, P_base, config);
+            pf_states{i}.x = x_init;
+            pf_states{i}.P = P_base;
             ukf_innovation_gate(i) = innovation_gate_initial;
+            pf_innovation_gate(i) = innovation_gate_initial;
         end
         
         % set up loggers
         logger_ukf = initialize_logger(num_houses_csac, length(timestamps), houses_csac_ids);
-
-        % === LOG INITIAL STATES ===
-        initial_states_ukf = zeros(2, num_houses_csac);
-        for i = 1:num_houses_csac
-            initial_states_ukf(:, i) = ukf_states{i}.x;
-            
-            % Also write to logger at t=1 so plots show the starting point
-            logger_ukf.state_estimates(:, i, 1) = ukf_states{i}.x;
-            logger_ukf.covariance_posterior(:, i, 1) = [ukf_states{i}.P(1,1); ukf_states{i}.P(2,2)];
-        end
+        logger_pf = initialize_logger(num_houses_csac, length(timestamps), houses_csac_ids);
 
         ukf_offsets = nan([num_houses_csac,1]);
+        pf_offsets = nan([num_houses_csac,1]);
 
         % === HEATING SEASON STATE TRACKING ===
         season_active = false;
@@ -179,10 +176,13 @@ for network = networks
         
         % Snapshot of last known good states
         ukf_states_snapshot = cell(size(ukf_states));
+        pf_states_snapshot = cell(size(pf_states));
         snapshot_timestep = NaN;
         for i = 1:num_houses_csac
             ukf_states_snapshot{i}.x = ukf_states{i}.x;
             ukf_states_snapshot{i}.P = ukf_states{i}.P;
+            pf_states_snapshot{i}.x = pf_states{i}.x;
+            pf_states_snapshot{i}.P = pf_states{i}.P;
         end
 
         % Season gate statistics
@@ -288,6 +288,7 @@ for network = networks
                             for i = 1:num_houses_csac
                                 % Restore point estimates from snapshot
                                 ukf_states{i}.x = ukf_states_snapshot{i}.x;
+                                pf_states{i}.x = pf_states_snapshot{i}.x;
                                 
                                 % Grow P proportionally to gap duration
                                 P_snap = ukf_states_snapshot{i}.P;
@@ -300,6 +301,7 @@ for network = networks
                                 P_grown(2,2) = min(P_grown(2,2), P_base(2,2));
                                 
                                 ukf_states{i}.P = P_grown;
+                                pf_states{i}.P = P_grown;
                                 
                                 if i == 1
                                     fprintf('    House %d: P_snap=[%.4f, %.6f], P_grown=[%.4f, %.6f], P_base=[%.4f, %.6f]\n', ...
@@ -335,6 +337,8 @@ for network = networks
                         for i = 1:num_houses_csac
                             ukf_states_snapshot{i}.x = ukf_states{i}.x;
                             ukf_states_snapshot{i}.P = ukf_states{i}.P;
+                            pf_states_snapshot{i}.x = pf_states{i}.x;
+                            pf_states_snapshot{i}.P = pf_states{i}.P;
                         end
                         snapshot_timestep = t;
                         
@@ -368,9 +372,12 @@ for network = networks
                     for i = 1:num_houses_csac
                         logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
                         logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
+                        logger_pf.state_estimates(:, i, t) = logger_pf.state_estimates(:, i, t-1);
+                        logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
                     end
                 end
                 logger_ukf.timestamps(t) = time;
+                logger_pf.timestamps(t) = time;
                 continue;  % Skip to next timestep
             end
             
@@ -385,17 +392,21 @@ for network = networks
             is_csac_active = (num_active_houses >= config.project.initialization.min_active_houses);
 
             [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, ukf_states);
+            [T_junction_pf_C, pf_master_offset] = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, pf_states);
             
-            if all(isnan(T_junction_ukf_C))
+            if all(isnan(T_junction_ukf_C)) || all(isnan(T_junction_pf_C))
                 continue
             end
 
             current_data.T_main_ukf_C = T_junction_ukf_C;
+            current_data.T_main_pf_C = T_junction_pf_C;
             
             logger_ukf.timestamps(t) = time;
+            logger_pf.timestamps(t) = time;
 
             for i = 1:num_houses_csac
                 log_ukf = false;
+                log_pf = false;
                 house_id = houses_csac_ids(i);
                 house_data = current_data(current_data.house_id==house_id,:);
                 if isempty(house_data)
@@ -404,9 +415,14 @@ for network = networks
                 [is_flow_sufficient_ukf, alpha_ukf, theta_ukf, min_flow_ukf_kg_h] = flow_validity_gate(house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
                 is_flow_sufficient_ukf = is_flow_sufficient_ukf && (house_data.flow_kg_h>absolute_flow_floor_kg_h);
 
+                [is_flow_sufficient_pf, alpha_pf, theta_pf, min_flow_pf_kg_h] = flow_validity_gate(house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, alpha_min);
+                is_flow_sufficient_pf = is_flow_sufficient_pf && (house_data.flow_kg_h>absolute_flow_floor_kg_h);
+               
                 delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
+                delta_T_pf_sufficient = ((house_data.T_main_pf_C - current_T_soil_C) >= delta_T_gate_threshold);
 
                 can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
+                can_update_pf = is_csac_active && is_flow_sufficient_pf && delta_T_pf_sufficient;
 
                 %% ============================================================
                 %% UKF UPDATE BLOCK
@@ -480,13 +496,88 @@ for network = networks
                     end
                 end
                 
+                %% ============================================================
+                %% PF UPDATE BLOCK
+                %% ============================================================
+                if can_update_pf
+                    if isnan(last_valid_T_main_pf_C(i))
+                        delta_T_main_change_pf = 0;
+                    else
+                        delta_T_main_change_pf = abs(house_data.T_main_pf_C - last_valid_T_main_pf_C(i));
+                    end
 
+                    if debug_disable_stability_gate
+                        is_system_stable = true;
+                    else
+                        is_system_stable = (delta_T_main_change_pf < max_delta_T_change);
+                    end
+
+                    if is_system_stable
+                        predicted_temp = get_supply_temp(house_data.T_main_pf_C, house_data.flow_kg_h, pf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
+                        innovation = house_data.T_supply_C - (predicted_temp - pf_states{i}.x(1));
+
+                        if abs(innovation) > hard_innovation_gate_C
+                            gate_reject_count_pf = gate_reject_count_pf + 1;
+                            if debug_print_update_result
+                                fprintf('PF  GATE REJECT | house %d | time %s | innovation=%.3f°C > gate=%.1f°C\n', ...
+                                    house_id, string(time), innovation, hard_innovation_gate_C);
+                            end
+                        else
+                            x_before = pf_states{i}.x;
+
+                            [pf_particles{i}, est_pf, cov_pf, diagnostics_pf] = update_pf_house(pf_particles{i}, house_data, current_T_soil_C, R_base, Q_base, config);
+                            
+                            if any(isnan(est_pf), 'all') || any(isnan(cov_pf), 'all')
+                                warning('PF returned NaN for house %d at %s', house_id, string(time));
+                            else
+                                % --- NIS gate ---
+                                nis_value = NaN;
+                                if isfield(diagnostics_pf, 'P_zz') && isfinite(diagnostics_pf.P_zz) && diagnostics_pf.P_zz > 0
+                                    if isfield(diagnostics_pf, 'y') && isfinite(diagnostics_pf.y)
+                                        nis_value = (diagnostics_pf.y^2) / diagnostics_pf.P_zz;
+                                    end
+                                end
+                                
+                                if isfinite(nis_value) && nis_value > max_nis
+                                    pf_states{i}.x = x_before;
+                                    gate_reject_count_pf = gate_reject_count_pf + 1;
+                                    if debug_print_update_result
+                                        fprintf('PF  NIS REJECT | house %d | time %s | NIS=%.2f > %.1f | innov=%.3f\n', ...
+                                            house_id, string(time), nis_value, max_nis, diagnostics_pf.y);
+                                    end
+                                else
+                                    gate_accept_count_pf = gate_accept_count_pf + 1;
+                                    pf_states{i}.x = est_pf;
+                                    pf_states{i}.P = cov_pf;
+                                    pf_offsets(i) = pf_states{i}.x(1);
+                                    log_pf = true;
+                                    last_valid_T_main_pf_C(i) = house_data.T_main_pf_C;
+
+                                    if isfield(diagnostics_pf, 'P_zz') && isfinite(diagnostics_pf.P_zz) && diagnostics_pf.P_zz > 0
+                                        pf_innovation_gate(i) = max(1, sqrt(diagnostics_pf.P_zz)*config.project.initialization.innovation_gate_N_sigma);
+                                    end
+                                    if debug_print_update_result
+                                        fprintf('PF  UPDATE | house %d | time %s | NIS=%.2f | innov=%.3f | dx=[%.4f %.6f]\n', ...
+                                            house_id, string(time), nis_value, diagnostics_pf.y, ...
+                                            pf_states{i}.x(1)-x_before(1), pf_states{i}.x(2)-x_before(2));
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
 
                 if log_ukf
                     logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
                 elseif t > 1
                     logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
                     logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
+                end
+                if log_pf
+                    logger_pf = update_logger(logger_pf, t, i, time, pf_states{i}, diagnostics_pf);
+                elseif t > 1
+                    logger_pf.state_estimates(:, i, t) = logger_pf.state_estimates(:, i, t-1);
+                    logger_pf.covariance_posterior(:, i, t) = logger_pf.covariance_posterior(:, i, t-1);
                 end
             end
 
@@ -505,6 +596,8 @@ for network = networks
                 for i = 1:num_houses_csac
                     ukf_states_snapshot{i}.x = ukf_states{i}.x;
                     ukf_states_snapshot{i}.P = ukf_states{i}.P;
+                    pf_states_snapshot{i}.x = pf_states{i}.x;
+                    pf_states_snapshot{i}.P = pf_states{i}.P;
                 end
             end
 
@@ -529,6 +622,18 @@ for network = networks
                     end
                 end
             end
+
+            if ~isnan(pf_master_offset) && abs(pf_master_offset) > master_offset_deadzone
+                if num_active_houses >= min_active_houses
+                    max_master_offset = 0.5;
+                    clamped_offset = max(-max_master_offset, min(max_master_offset, pf_master_offset));
+                    damped_pf_offset = master_offset_gamma * clamped_offset;
+                    for i = 1:num_houses_csac
+                        pf_states{i}.x(1) = pf_states{i}.x(1) - damped_pf_offset;
+                        pf_particles{i}(1,:) = pf_particles{i}(1,:) - damped_pf_offset;
+                    end
+                end
+            end
         end
 
         % Print gate and season statistics
@@ -536,6 +641,9 @@ for network = networks
         fprintf('UKF: %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
             gate_accept_count_ukf, gate_reject_count_ukf, ...
             100*gate_reject_count_ukf / max(1, gate_accept_count_ukf + gate_reject_count_ukf));
+        fprintf('PF:  %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
+            gate_accept_count_pf, gate_reject_count_pf, ...
+            100*gate_reject_count_pf / max(1, gate_accept_count_pf + gate_reject_count_pf));
         fprintf('Season gate: %d active days, %d inactive days (%.1f%% active)\n', ...
             season_gate_active_days, season_gate_inactive_days, ...
             100*season_gate_active_days / max(1, season_gate_active_days + season_gate_inactive_days));
@@ -548,27 +656,20 @@ for network = networks
         end
         fprintf('=====================================\n\n');
 
-        
         plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
+        plot_diagnostics(logger_pf, ground_truth_csac, csac, network, output_folder_pf);
         save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
+        save_logger_to_csv(logger_pf, output_folder_pf, strcat('pf_csac_', string(csac)));
 
         save_diagnostic_summary(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
+        save_diagnostic_summary(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
         save_diagnostic_summary_detailed(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
+        save_diagnostic_summary_detailed(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
         save_daily_diagnostics(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
-        % Close diagnostic figures but keep waitbar
-        figs = findall(0, 'Type', 'figure');
-        for fig = figs'
-            if ~strcmp(get(fig, 'Tag'), 'TMWWaitbar')
-                close(fig);
-            end
-        end
+        save_daily_diagnostics(logger_pf, ground_truth_csac, csac, output_folder_pf, 'pf');
     end
    
 end
 
-try
-    close(w);
-catch
-    % Waitbar already closed or invalid
-end
+close(w);
 disp('Analysis complete. All diagnostic plots have been saved.')
