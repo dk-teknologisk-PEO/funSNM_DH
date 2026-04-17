@@ -86,7 +86,7 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     % --- Scale Process Noise ---
     % If we should focus on the U-value, increase its process noise to allow
     % the filter to update it more aggressively.
-    noise_scaler = 100; % Amplifies the effect. Tune this parameter.
+    noise_scaler = 10; % Amplifies the effect. Tune this parameter.
     
     Q_offset_var = Q_base_offset_var * (1 + noise_scaler * focus_on_offset);
     Q_U_var      = Q_base_U_var      * (1 + noise_scaler * focus_on_U);
@@ -110,7 +110,18 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     P_pred = P + Q;
 
     alpha_forget = config.project.initialization.ukf.alpha_forget; % Use a small value since updates are sparse (gated)
-    P_pred = alpha_forget * P_pred; 
+    P_max_offset = 4.0^2;   % max uncertainty: 4°C std dev
+    P_max_U      = 0.2^2;   % max uncertainty: 0.2 W/m/K std dev
+
+    P_pred(1,1) = min(alpha_forget * P_pred(1,1), P_max_offset);
+    P_pred(2,2) = min(alpha_forget * P_pred(2,2), P_max_U);
+
+    %% Covariance floor — prevent overconfidence, ensure ongoing responsiveness
+    P_floor_offset = (0.05)^2;   % 0.05°C std dev minimum
+    P_floor_U      = (0.005)^2;  % 0.005 W/m/K std dev minimum
+
+    P_pred(1,1) = max(P_pred(1,1), P_floor_offset);
+    P_pred(2,2) = max(P_pred(2,2), P_floor_U);
 
     %% 4. UKF Measurement Update Step
     
@@ -159,8 +170,30 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     
     % Update state and covariance
     x_new = x_pred + K * y;
+
+    %%% STEP 1.2: Maximum step size limiter
+    %%% Prevents a single noisy measurement from corrupting a converged estimate.
+    max_dx = [0.15; 0.01];  % max change per update: 0.15°C offset, 0.01 W/m/K
+    dx = x_new - x_pred;
+    was_limited = false;
+    for idx = 1:length(dx)
+        if abs(dx(idx)) > max_dx(idx)
+            dx(idx) = sign(dx(idx)) * max_dx(idx);
+            was_limited = true;
+        end
+    end
+    x_new = x_pred + dx;
+
+
     P_new = P_pred - K * P_zz * K';
     P_new = (P_new + P_new') / 2; % ensure symmetry
+
+    %%% STEP 1.2: If step was limited, inflate covariance to signal
+    %%% that the filter was overconfident
+    if was_limited
+        P_new(1,1) = P_new(1,1) * 1.5;
+        P_new(2,2) = P_new(2,2) * 1.5;
+    end
     
     % Apply physical constraints to the state
     % Define the boundaries for the states

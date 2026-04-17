@@ -17,7 +17,7 @@ config = jsondecode(fileread("config.json"));
 t_start = config.project.time.start;
 t_end = config.project.time.end;
 network_to_inspect = 1;
-csac_to_inspect = 1;
+csac_to_inspect = 2;
 output_folder = fullfile('results', 'inspection_data'); % Define an output folder
 if ~exist(output_folder, 'dir'), mkdir(output_folder); end
 
