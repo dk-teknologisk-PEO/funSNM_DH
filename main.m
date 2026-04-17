@@ -30,6 +30,11 @@ innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_of
 
 fprintf('Hard innovation gate set to %.2f °C\n', config.project.initialization.max_innovation_C);
 
+% KPI configuration
+kpi_config.offset_tolerance = 0.3;     % °C
+kpi_config.U_tolerance = 0.02;         % W/m/K
+kpi_config.convergence_hold_days = 14; % active days
+
 % Load weather data and build lookup table
 [T_soil_C, T_air_C] = soilTemp(config);
 daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
@@ -37,6 +42,9 @@ daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
 networks = config.project.datasets.datasets;
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'), '/ukf');
 w = waitbar(0.0, "Starting analysis");
+
+% Collect all KPI summaries across the run
+all_kpi_summaries = table();
 
 %% ================================================================
 %% MAIN PROCESSING LOOP
@@ -78,8 +86,11 @@ for network = networks
                 daily_T_air_max_table, P_base, config, csac);
         end
 
-        %% Post-processing: statistics and output
+        %% Post-processing: statistics, KPIs, and output
         print_csac_summary(csac, cs.gate_accept_count, cs.gate_reject_count, cs.season_state);
+
+        kpi_summary = compute_and_save_network_kpis(cs, csac, output_folder_ukf, kpi_config);
+        all_kpi_summaries = [all_kpi_summaries; kpi_summary]; %#ok<AGROW>
 
         plot_diagnostics(cs.logger, cs.ground_truth, csac, network, output_folder_ukf);
         save_logger_to_csv(cs.logger, output_folder_ukf, strcat('ukf_csac_', string(csac)));
@@ -94,6 +105,16 @@ for network = networks
             end
         end
     end
+end
+
+%% Save aggregate KPI summary
+if ~isempty(all_kpi_summaries)
+    if ~exist(output_folder_ukf, 'dir')
+        mkdir(output_folder_ukf);
+    end
+    writetable(all_kpi_summaries, fullfile(output_folder_ukf, 'kpi_summary_all.csv'));
+    fprintf('\nAggregate KPI summary saved: %d houses across %d CSACs\n', ...
+        height(all_kpi_summaries), numel(unique(all_kpi_summaries.csac_id)));
 end
 
 try close(w); catch; end
