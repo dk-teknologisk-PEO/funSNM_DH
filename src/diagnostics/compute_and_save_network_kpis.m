@@ -1,4 +1,4 @@
-function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi_config)
+function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi_config, true_trajectories)
 %COMPUTE_AND_SAVE_NETWORK_KPIS Computes KPIs for all houses in a CSAC,
 %   saves CSV results and generates visualization plots.
 %
@@ -7,12 +7,24 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
 %       csac_id (int): CSAC identifier.
 %       output_folder (char): Output directory for CSV and plot files.
 %       kpi_config (struct): KPI parameters.
+%       true_trajectories (cell, optional): Cell array of structs per house
+%           with fields .offset (1xT) and .U (1xT). If not provided or
+%           empty, constant trajectories are built from ground_truth.
 %
 %   Returns:
 %       summary (table): Summary table with one row per house.
 
     num_houses = cs.num_houses;
     T = length(cs.logger.timestamps);
+
+    % Build constant trajectories if not provided
+    if nargin < 5 || isempty(true_trajectories)
+        true_trajectories = cell(num_houses, 1);
+        for i = 1:num_houses
+            true_trajectories{i}.offset = repmat(cs.ground_truth.true_offset(i), 1, T);
+            true_trajectories{i}.U = repmat(cs.ground_truth.true_U(i), 1, T);
+        end
+    end
 
     % Pre-allocate summary columns
     house_ids = cs.house_ids(:);
@@ -47,12 +59,8 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
         state_est = squeeze(cs.logger.state_estimates(:, i, :)); % 2xT
         cov_post = squeeze(cs.logger.covariance_posterior(:, i, :)); % 2xT
 
-        % Build constant trajectories from ground truth
-        true_offset_traj = repmat(cs.ground_truth.true_offset(i), 1, T);
-        true_U_traj = repmat(cs.ground_truth.true_U(i), 1, T);
-
         kpis = compute_house_kpis(state_est, cov_post, cs.logger.timestamps, ...
-            true_offset_traj, true_U_traj, kpi_config);
+            true_trajectories{i}.offset, true_trajectories{i}.U, kpi_config);
 
         tw_mae_offset(i) = kpis.tw_mae_offset;
         tw_mae_U(i) = kpis.tw_mae_U;
