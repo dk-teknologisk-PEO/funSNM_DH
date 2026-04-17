@@ -31,9 +31,11 @@ innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_of
 fprintf('Hard innovation gate set to %.2f °C\n', config.project.initialization.max_innovation_C);
 
 % KPI configuration
-kpi_config.offset_tolerance = 0.3;     % °C
-kpi_config.U_tolerance = 0.02;         % W/m/K
-kpi_config.convergence_hold_days = 14; % active days
+kpi_config.offset_tolerance = 0.3;       % °C — error band for steady-state metrics
+kpi_config.U_tolerance = 0.02;           % W/m/K — error band for steady-state metrics
+kpi_config.convergence_P_offset = 0.5;   % °C — P threshold for offset convergence
+kpi_config.convergence_P_U = 0.05;       % W/m/K — P threshold for U convergence
+kpi_config.convergence_hold_days = 14;   % active days P must stay below threshold
 
 % Load weather data and build lookup table
 [T_soil_C, T_air_C] = soilTemp(config);
