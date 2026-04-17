@@ -13,19 +13,14 @@ close all
 clc
 java.lang.System.gc();
 
-addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'config')
+addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', 'src/diagnostics', 'src/particle_filter', 'src/gates', 'src/CSACs/', 'config')
 
 % read config-file
 config = jsondecode(fileread("config.json"));
 
 % --- DEBUG SETTINGS (from config) ---
 debug_disable_stability_gate = config.project.debug.disable_stability_gate;
-debug_disable_mean_centering = config.project.debug.disable_mean_centering;
 debug_print_update_result = config.project.debug.print_update_result;
-
-% --- MASTER OFFSET SETTINGS (from config) ---
-master_offset_gamma = config.project.master_offset.gamma;
-master_offset_deadzone = config.project.master_offset.deadzone;
 
 % --- HARD INNOVATION GATE (from config) ---
 hard_innovation_gate_C = config.project.initialization.max_innovation_C;
@@ -41,7 +36,6 @@ innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_of
 % gating configuration
 absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
 delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
-min_active_houses = config.project.initialization.min_active_houses;
 alpha_min = config.project.cutoff.alpha_min;
 max_delta_T_change = config.project.initialization.max_delta_T_change_rate;
 
@@ -68,93 +62,49 @@ fprintf('  Built daily T_air_max table: %d days (%.1f to %.1f °C)\n', ...
     min(daily_T_air_max_table.T_air_max), ...
     max(daily_T_air_max_table.T_air_max));
 
-output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/ukf');
-output_folder_pf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'),'/pf');
+output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'), '/ukf');
 w = waitbar(0.0, "Starting analysis");
 
 % run through all the networks from the config-file
 for network = networks
     % load relevant data for the network
-    [meter_data, network_data, topology] = importData(config,network);
+    [meter_data, network_data, topology] = importData(config, network);
     timestamps = unique(meter_data.timestamp);
     
     % find the ids of the csacs from the topology
     csac_ids = [topology.cul_de_sacs.id];
-    prev_houses = 0;
 
     % loop through all cul-de-sacs in the network
-    for csac=csac_ids
+    for csac = csac_ids
         
-        % extract relevant data for the csac
-        U_csac = topology.pipe_parameters.csac_pipe.insulation_W_m_K;
-        houses_csac = ([topology.houses.cul_de_sac_id]==csac);
+        %% ============================================================
+        %% CSAC INITIALIZATION
+        %% ============================================================
+        houses_csac = ([topology.houses.cul_de_sac_id] == csac);
         topology_csac = topology.houses(houses_csac);
-        num_houses_csac = sum(houses_csac);
-        houses_csac_ids = sort([topology.houses(houses_csac).id]);
-        true_offset = zeros([size(topology_csac),1]);
 
-        ground_truth_csac = table([topology_csac.id]', true_offset, [topology_csac.service_pipe_insulation_W_m_K]', ...
-            'VariableNames', {'house_id', 'true_offset', 'true_U'});
-        
-        csac_table = table([topology_csac.id]', [topology_csac.service_pipe_len_m]', [topology_csac.dist_on_cul_de_sac_m]', 'VariableNames',{'house_id','length_service_m','x_pos_m'});
-
-        meter_data_csac = meter_data(ismember(meter_data.house_id,houses_csac_ids),:);
-        meter_data_csac = join(meter_data_csac, csac_table, "Keys", "house_id");
-
-        % initialize filters for each house
-        ukf_states = cell(1, num_houses_csac);
-        ukf_innovation_gate = nan([1,num_houses_csac]);
-        
-        last_valid_T_main_ukf_C = nan(num_houses_csac,1);
-        last_update_timestamp_ukf = NaT(num_houses_csac,1);
-
-        % Gate statistics
-        gate_reject_count_ukf = 0;
-        gate_accept_count_ukf = 0;
-
-        for i = 1:num_houses_csac
-            x_init = [randn()*0.3; 0.12 + randn()*0.03];
-            ukf_states{i} = initialize_kalman_filter(x_init, Q_base, R_base, P_base);
-            ukf_innovation_gate(i) = innovation_gate_initial;
-        end
-        
-        % set up loggers
-        logger_ukf = initialize_logger(num_houses_csac, length(timestamps), houses_csac_ids);
-
-        % === LOG INITIAL STATES ===
-        initial_states_ukf = zeros(2, num_houses_csac);
-        for i = 1:num_houses_csac
-            initial_states_ukf(:, i) = ukf_states{i}.x;
-            logger_ukf.state_estimates(:, i, 1) = ukf_states{i}.x;
-            logger_ukf.covariance_posterior(:, i, 1) = [ukf_states{i}.P(1,1); ukf_states{i}.P(2,2)];
-        end
-
-        ukf_offsets = nan([num_houses_csac,1]);
-
-        % === HEATING SEASON STATE ===
-        season_state = initialize_season_state();
-        
-        % Snapshot of last known good states
-        ukf_states_snapshot = cell(size(ukf_states));
-        for i = 1:num_houses_csac
-            ukf_states_snapshot{i}.x = ukf_states{i}.x;
-            ukf_states_snapshot{i}.P = ukf_states{i}.P;
-        end
+        cs = initialize_csac_state(topology, topology_csac, houses_csac, ...
+            meter_data, length(timestamps), Q_base, R_base, P_base, innovation_gate_initial);
 
         % run through the timesteps
-        waitbar((csac)/length(csac_ids),w,strcat("Running network. At timestep: 0/", string(length(timestamps)),", csac: ",string(csac),"/",string(length(csac_ids)-1),", network: ", string(network)))
+        waitbar((csac)/length(csac_ids), w, strcat("Running network. At timestep: 0/", ...
+            string(length(timestamps)), ", csac: ", string(csac), "/", ...
+            string(length(csac_ids)-1), ", network: ", string(network)))
+
         for t = 1:length(timestamps)
 
-            if mod(t,10)==0
-                waitbar(t/(length(timestamps)*length(csac_ids))+(csac)/length(csac_ids),w,strcat("Running network. At timestep: ", string(t), "/", string(length(timestamps)),", csac: ",string(csac),"/",string(length(csac_ids)-1),", network: ", string(network)))
+            if mod(t, 10) == 0
+                waitbar(t/(length(timestamps)*length(csac_ids)) + (csac)/length(csac_ids), w, ...
+                    strcat("Running network. At timestep: ", string(t), "/", ...
+                    string(length(timestamps)), ", csac: ", string(csac), "/", ...
+                    string(length(csac_ids)-1), ", network: ", string(network)))
             end
             time = timestamps(t);
 
-            current_data = meter_data_csac(meter_data_csac.timestamp==time,:);
+            current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
             current_data = sortrows(current_data, 'house_id');
 
-            current_T_soil_C = T_soil_C(T_soil_C.time==time,:).values;
-            current_T_air_C = T_air_C((year(T_air_C.time)==year(time)) & (month(T_air_C.time)==month(time)) & (day(T_air_C.time)==day(time)),:).values;
+            current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
 
             if isempty(current_data) || isempty(current_T_soil_C)
                 continue
@@ -164,162 +114,126 @@ for network = networks
             %% HEATING SEASON GATE
             %% ============================================================
             current_date = dateshift(time, 'start', 'day');
-            [season_state, actions] = manage_heating_season(...
-                season_state, current_date, t, daily_T_air_max_table, config, csac);
+            [cs.season_state, actions] = manage_heating_season(...
+                cs.season_state, current_date, t, daily_T_air_max_table, config, csac);
 
-            % Apply snapshot restore/save
             if actions.do_restore_snapshot || actions.do_save_snapshot
-                [ukf_states, ukf_states_snapshot] = apply_season_actions(...
-                    actions, ukf_states, ukf_states_snapshot, P_base, config);
+                [cs.ukf_states, cs.ukf_states_snapshot] = apply_season_actions(...
+                    actions, cs.ukf_states, cs.ukf_states_snapshot, P_base, config);
             end
 
-            % Track last active date for gap calculation
             if actions.season_is_active
-                season_state.last_active_date = current_date;
+                cs.season_state.last_active_date = current_date;
             end
 
-            % Skip if not in season
             if actions.skip_timestep
                 if t > 1
-                    for i = 1:num_houses_csac
-                        logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
-                        logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
+                    for i = 1:cs.num_houses
+                        cs.logger.state_estimates(:, i, t) = cs.logger.state_estimates(:, i, t-1);
+                        cs.logger.covariance_posterior(:, i, t) = cs.logger.covariance_posterior(:, i, t-1);
                     end
                 end
-                logger_ukf.timestamps(t) = time;
+                cs.logger.timestamps(t) = time;
                 continue;
             end
 
             %% ============================================================
-            %% ACTIVE SEASON: Normal processing continues below
+            %% ACTIVE SEASON: Main pipe temperature estimation
             %% ============================================================
-
             num_active_houses = sum(current_data.flow_kg_h >= absolute_flow_floor_kg_h);
             is_csac_active = (num_active_houses >= config.project.initialization.min_active_houses);
 
-            [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(current_data, current_T_soil_C, U_csac, absolute_flow_floor_kg_h, ukf_states);
+            [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(...
+                current_data, current_T_soil_C, cs.U_csac, absolute_flow_floor_kg_h, cs.ukf_states);
             
             if all(isnan(T_junction_ukf_C))
                 continue
             end
 
             current_data.T_main_ukf_C = T_junction_ukf_C;
-            
-            logger_ukf.timestamps(t) = time;
+            cs.logger.timestamps(t) = time;
 
             %% ============================================================
             %% PER-HOUSE UKF UPDATES
             %% ============================================================
-            for i = 1:num_houses_csac
+            for i = 1:cs.num_houses
                 log_ukf = false;
-                house_id = houses_csac_ids(i);
-                house_data = current_data(current_data.house_id==house_id,:);
+                house_id = cs.house_ids(i);
+                house_data = current_data(current_data.house_id == house_id, :);
                 if isempty(house_data)
                     continue
                 end
 
                 % --- Flow and temperature validity gates ---
-                [is_flow_sufficient_ukf, ~, ~, ~] = flow_validity_gate(...
-                    house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
-                is_flow_sufficient_ukf = is_flow_sufficient_ukf && (house_data.flow_kg_h > absolute_flow_floor_kg_h);
-                delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
-                can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
+                [is_flow_sufficient, ~, ~, ~] = flow_validity_gate(...
+                    house_data.flow_kg_h, cs.ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
+                is_flow_sufficient = is_flow_sufficient && (house_data.flow_kg_h > absolute_flow_floor_kg_h);
+                delta_T_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
+                can_update = is_csac_active && is_flow_sufficient && delta_T_sufficient;
 
                 % --- Gated UKF update ---
-                if can_update_ukf
+                if can_update
                     gate_params = struct( ...
-                        'last_valid_T_main_C', last_valid_T_main_ukf_C(i), ...
-                        'max_delta_T_change',  max_delta_T_change, ...
+                        'last_valid_T_main_C',    cs.last_valid_T_main_C(i), ...
+                        'max_delta_T_change',     max_delta_T_change, ...
                         'hard_innovation_gate_C', hard_innovation_gate_C, ...
-                        'max_nis',             max_nis, ...
+                        'max_nis',                max_nis, ...
                         'disable_stability_gate', debug_disable_stability_gate, ...
-                        'debug_print',         debug_print_update_result, ...
-                        'house_id',            house_id, ...
-                        'time',                time);
+                        'debug_print',            debug_print_update_result, ...
+                        'house_id',               house_id, ...
+                        'time',                   time);
 
-                    [ukf_states{i}, update_result] = update_house_ukf_gated(...
-                        ukf_states{i}, house_data, current_T_soil_C, config, gate_params);
+                    [cs.ukf_states{i}, update_result] = update_house_ukf_gated(...
+                        cs.ukf_states{i}, house_data, current_T_soil_C, config, gate_params);
 
                     if update_result.accepted
-                        gate_accept_count_ukf = gate_accept_count_ukf + 1;
-                        ukf_offsets(i) = ukf_states{i}.x(1);
+                        cs.gate_accept_count = cs.gate_accept_count + 1;
+                        cs.ukf_offsets(i) = cs.ukf_states{i}.x(1);
                         log_ukf = true;
-                        last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                        last_update_timestamp_ukf(i) = time;
+                        cs.last_valid_T_main_C(i) = house_data.T_main_ukf_C;
+                        cs.last_update_timestamp(i) = time;
                         if isfinite(update_result.innovation_gate)
-                            ukf_innovation_gate(i) = update_result.innovation_gate;
+                            cs.ukf_innovation_gate(i) = update_result.innovation_gate;
                         end
                     elseif update_result.rejected
-                        gate_reject_count_ukf = gate_reject_count_ukf + 1;
+                        cs.gate_reject_count = cs.gate_reject_count + 1;
                     end
-                    % update_result.skipped: no counter change needed
                 end
 
                 % --- Logging ---
                 if log_ukf
-                    logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, update_result.diagnostics);
+                    cs.logger = update_logger(cs.logger, t, i, time, cs.ukf_states{i}, update_result.diagnostics);
                 elseif t > 1
-                    logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
-                    logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
+                    cs.logger.state_estimates(:, i, t) = cs.logger.state_estimates(:, i, t-1);
+                    cs.logger.covariance_posterior(:, i, t) = cs.logger.covariance_posterior(:, i, t-1);
                 end
             end
 
             %% ============================================================
-            %% SNAPSHOT UPDATE (only after season has run long enough)
+            %% SNAPSHOT UPDATE
             %% ============================================================
-            min_season_for_cooldown = config.project.heating_season_gate.min_season_days_for_cooldown;
-            if ~isnat(season_state.start_date)
-                current_season_days = days(current_date - season_state.start_date);
-            else
-                current_season_days = 0;
-            end
-            
-            if current_season_days >= min_season_for_cooldown
-                season_state.snapshot_timestep = t;
-                for i = 1:num_houses_csac
-                    ukf_states_snapshot{i}.x = ukf_states{i}.x;
-                    ukf_states_snapshot{i}.P = ukf_states{i}.P;
-                end
-            end
+            [cs.ukf_states_snapshot, cs.season_state.snapshot_timestep] = ...
+                update_snapshot(cs.season_state, current_date, t, ...
+                cs.ukf_states, cs.ukf_states_snapshot, config);
 
             %% ============================================================
             %% MASTER OFFSET APPLICATION
             %% ============================================================
-            if ~isnan(ukf_master_offset) && abs(ukf_master_offset) > master_offset_deadzone
-                if num_active_houses >= min_active_houses
-                    max_master_offset = 0.5;
-                    clamped_offset = max(-max_master_offset, min(max_master_offset, ukf_master_offset));
-                    damped_ukf_offset = master_offset_gamma * clamped_offset;
-                    for i = 1:num_houses_csac
-                        ukf_states{i}.x(1) = ukf_states{i}.x(1) - damped_ukf_offset;
-                    end
-                end
-            end
+            cs.ukf_states = apply_master_offset(cs.ukf_states, ukf_master_offset, ...
+                num_active_houses, config);
         end
 
-        % Print gate and season statistics
-        fprintf('\n=== CSAC %d Final Statistics ===\n', csac);
-        fprintf('UKF: %d accepted, %d rejected (%.1f%% rejection rate)\n', ...
-            gate_accept_count_ukf, gate_reject_count_ukf, ...
-            100*gate_reject_count_ukf / max(1, gate_accept_count_ukf + gate_reject_count_ukf));
-        fprintf('Season gate: %d active days, %d inactive days (%.1f%% active)\n', ...
-            season_state.active_days, season_state.inactive_days, ...
-            100*season_state.active_days / max(1, season_state.active_days + season_state.inactive_days));
-        fprintf('Heating seasons started: %d\n', season_state.count);
-        if ~isnan(season_state.end_timestep)
-            fprintf('Last season ended at timestep %d\n', season_state.end_timestep);
-        end
-        if season_state.cooldown_active
-            fprintf('Cooldown active from real season ending %s\n', string(season_state.last_real_season_end_date));
-        end
-        fprintf('=====================================\n\n');
+        %% ============================================================
+        %% POST-PROCESSING: Statistics and Output
+        %% ============================================================
+        print_csac_summary(csac, cs.gate_accept_count, cs.gate_reject_count, cs.season_state);
 
-        plot_diagnostics(logger_ukf, ground_truth_csac, csac, network, output_folder_ukf);
-        save_logger_to_csv(logger_ukf, output_folder_ukf, strcat('ukf_csac_', string(csac)));
+        plot_diagnostics(cs.logger, cs.ground_truth, csac, network, output_folder_ukf);
+        save_logger_to_csv(cs.logger, output_folder_ukf, strcat('ukf_csac_', string(csac)));
+        save_diagnostic_summary(cs.logger, cs.ground_truth, csac, output_folder_ukf, 'ukf');
+        save_diagnostic_summary_detailed(cs.logger, cs.ground_truth, csac, output_folder_ukf, 'ukf');
+        save_daily_diagnostics(cs.logger, cs.ground_truth, csac, output_folder_ukf, 'ukf');
 
-        save_diagnostic_summary(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
-        save_diagnostic_summary_detailed(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
-        save_daily_diagnostics(logger_ukf, ground_truth_csac, csac, output_folder_ukf, 'ukf');
         % Close diagnostic figures but keep waitbar
         figs = findall(0, 'Type', 'figure');
         for fig = figs'
@@ -328,12 +242,10 @@ for network = networks
             end
         end
     end
-   
 end
 
 try
     close(w);
 catch
-    % Waitbar already closed or invalid
 end
 disp('Analysis complete. All diagnostic plots have been saved.')
