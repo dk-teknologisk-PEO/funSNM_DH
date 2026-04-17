@@ -42,16 +42,8 @@ innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_of
 absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
 delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
 min_active_houses = config.project.initialization.min_active_houses;
-gate_N_sigma = config.project.initialization.innovation_gate_N_sigma;
-max_innovation = config.project.initialization.max_innovation_C;
 alpha_min = config.project.cutoff.alpha_min;
-
 max_delta_T_change = config.project.initialization.max_delta_T_change_rate;
-
-air_temp_cutoff = config.project.initialization.max_air_temperature;
-
-error_meaning = config.project.initialization.modify_mean_offset;
-hibernation_reset_threshold_hours = config.project.initialization.hibernation_reset_threshold_hours;
 
 networks = config.project.datasets.datasets;
 
@@ -215,6 +207,9 @@ for network = networks
             
             logger_ukf.timestamps(t) = time;
 
+            %% ============================================================
+            %% PER-HOUSE UKF UPDATES
+            %% ============================================================
             for i = 1:num_houses_csac
                 log_ukf = false;
                 house_id = houses_csac_ids(i);
@@ -222,87 +217,47 @@ for network = networks
                 if isempty(house_data)
                     continue
                 end
-                [is_flow_sufficient_ukf, alpha_ukf, theta_ukf, min_flow_ukf_kg_h] = flow_validity_gate(house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
-                is_flow_sufficient_ukf = is_flow_sufficient_ukf && (house_data.flow_kg_h>absolute_flow_floor_kg_h);
 
+                % --- Flow and temperature validity gates ---
+                [is_flow_sufficient_ukf, ~, ~, ~] = flow_validity_gate(...
+                    house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, alpha_min);
+                is_flow_sufficient_ukf = is_flow_sufficient_ukf && (house_data.flow_kg_h > absolute_flow_floor_kg_h);
                 delta_T_ukf_sufficient = ((house_data.T_main_ukf_C - current_T_soil_C) >= delta_T_gate_threshold);
-
                 can_update_ukf = is_csac_active && is_flow_sufficient_ukf && delta_T_ukf_sufficient;
 
-                %% ============================================================
-                %% UKF UPDATE BLOCK
-                %% ============================================================
+                % --- Gated UKF update ---
                 if can_update_ukf
-                    if isnan(last_valid_T_main_ukf_C(i))
-                        delta_T_main_change_ukf = 0;
-                    else
-                        delta_T_main_change_ukf = abs(house_data.T_main_ukf_C-last_valid_T_main_ukf_C(i));
-                    end
+                    gate_params = struct( ...
+                        'last_valid_T_main_C', last_valid_T_main_ukf_C(i), ...
+                        'max_delta_T_change',  max_delta_T_change, ...
+                        'hard_innovation_gate_C', hard_innovation_gate_C, ...
+                        'max_nis',             max_nis, ...
+                        'disable_stability_gate', debug_disable_stability_gate, ...
+                        'debug_print',         debug_print_update_result, ...
+                        'house_id',            house_id, ...
+                        'time',                time);
 
-                    if debug_disable_stability_gate
-                        is_system_stable = true;
-                    else
-                        is_system_stable = (delta_T_main_change_ukf < max_delta_T_change);
-                    end
+                    [ukf_states{i}, update_result] = update_house_ukf_gated(...
+                        ukf_states{i}, house_data, current_T_soil_C, config, gate_params);
 
-                    if is_system_stable
-                        predicted_temp = get_supply_temp(house_data.T_main_ukf_C, house_data.flow_kg_h, ukf_states{i}.x(2), house_data.length_service_m, current_T_soil_C);
-                        innovation = house_data.T_supply_C - (predicted_temp - ukf_states{i}.x(1));
-
-                        if abs(innovation) > hard_innovation_gate_C
-                            gate_reject_count_ukf = gate_reject_count_ukf + 1;
-                            if debug_print_update_result
-                                fprintf('UKF GATE REJECT | house %d | time %s | innovation=%.3f°C > gate=%.1f°C\n', ...
-                                    house_id, string(time), innovation, hard_innovation_gate_C);
-                            end
-                        else
-                            x_before = ukf_states{i}.x;
-                            P_before = ukf_states{i}.P;
-
-                            [ukf_states{i}, diagnostics_ukf] = update_ukf_house(ukf_states{i}, house_data, current_T_soil_C, config);
-                            if any(isnan(ukf_states{i}.x), 'all') || any(isnan(ukf_states{i}.P), 'all')
-                                warning('UKF returned NaN for house %d at %s', house_id, string(time));
-                            else
-                                % --- NIS gate: revert if update quality is poor ---
-                                nis_value = NaN;
-                                if isfield(diagnostics_ukf, 'y') && isfield(diagnostics_ukf, 'P_zz') ...
-                                        && isfinite(diagnostics_ukf.P_zz) && diagnostics_ukf.P_zz > 0
-                                    nis_value = (diagnostics_ukf.y^2) / diagnostics_ukf.P_zz;
-                                end
-                                
-                                if isfinite(nis_value) && nis_value > max_nis
-                                    % Revert state
-                                    ukf_states{i}.x = x_before;
-                                    ukf_states{i}.P = P_before;
-                                    gate_reject_count_ukf = gate_reject_count_ukf + 1;
-                                    if debug_print_update_result
-                                        fprintf('UKF NIS REJECT | house %d | time %s | NIS=%.2f > %.1f | innov=%.3f\n', ...
-                                            house_id, string(time), nis_value, max_nis, diagnostics_ukf.y);
-                                    end
-                                else
-                                    % Accept update
-                                    gate_accept_count_ukf = gate_accept_count_ukf + 1;
-                                    ukf_offsets(i) = ukf_states{i}.x(1);
-                                    log_ukf = true;
-                                    last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
-                                    last_update_timestamp_ukf(i) = time;
-                                    
-                                    if isfield(diagnostics_ukf, 'P_zz') && isfinite(diagnostics_ukf.P_zz) && diagnostics_ukf.P_zz > 0
-                                        ukf_innovation_gate(i) = max(1, sqrt(diagnostics_ukf.P_zz) * config.project.initialization.innovation_gate_N_sigma);
-                                    end
-                                    if debug_print_update_result
-                                        fprintf('UKF UPDATE | house %d | time %s | NIS=%.2f | innov=%.3f | dx=[%.4f %.6f]\n', ...
-                                            house_id, string(time), nis_value, diagnostics_ukf.y, ...
-                                            ukf_states{i}.x(1)-x_before(1), ukf_states{i}.x(2)-x_before(2));
-                                    end
-                                end
-                            end
+                    if update_result.accepted
+                        gate_accept_count_ukf = gate_accept_count_ukf + 1;
+                        ukf_offsets(i) = ukf_states{i}.x(1);
+                        log_ukf = true;
+                        last_valid_T_main_ukf_C(i) = house_data.T_main_ukf_C;
+                        last_update_timestamp_ukf(i) = time;
+                        if isfinite(update_result.innovation_gate)
+                            ukf_innovation_gate(i) = update_result.innovation_gate;
                         end
+                    elseif update_result.rejected
+                        gate_reject_count_ukf = gate_reject_count_ukf + 1;
                     end
+                    % update_result.skipped: no counter change needed
                 end
 
+                % --- Logging ---
                 if log_ukf
-                    logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, diagnostics_ukf);
+                    logger_ukf = update_logger(logger_ukf, t, i, time, ukf_states{i}, update_result.diagnostics);
                 elseif t > 1
                     logger_ukf.state_estimates(:, i, t) = logger_ukf.state_estimates(:, i, t-1);
                     logger_ukf.covariance_posterior(:, i, t) = logger_ukf.covariance_posterior(:, i, t-1);
@@ -320,7 +275,6 @@ for network = networks
             end
             
             if current_season_days >= min_season_for_cooldown
-                % Season is established — safe to update snapshot
                 season_state.snapshot_timestep = t;
                 for i = 1:num_houses_csac
                     ukf_states_snapshot{i}.x = ukf_states{i}.x;
