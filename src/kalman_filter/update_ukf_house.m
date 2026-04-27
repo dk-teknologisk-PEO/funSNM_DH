@@ -188,6 +188,12 @@ function [state, diagnostics] = update_ukf_house(state, house_data, T_soil_C, co
     P_new = P_pred - K * P_zz * K';
     P_new = (P_new + P_new') / 2; % ensure symmetry
 
+    % Ensure P stays positive definite
+    if any(diag(P_new) < 0)
+        P_new = P_pred;  % revert to predicted if update broke P
+        warning('P went negative — reverting to P_pred for house update');
+    end
+
     %%% STEP 1.2: If step was limited, inflate covariance to signal
     %%% that the filter was overconfident
     if was_limited
