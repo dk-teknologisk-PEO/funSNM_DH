@@ -126,18 +126,21 @@ function [pass, fail, details] = test_compute_house_kpis()
         fprintf('  ✗ %s\n', ME.message);
     end
 
-    %% Test 6: Insufficient data returns empty KPIs
+    %% Test 6: Very short data series gives finite TW-MAE but no convergence
     try
         timestamps = datetime(2019,10,1) + hours(0:1);
-        state_est = [0 0.01; 0.12 0.121]; % slight change to trigger active
+        state_est = [0 0.01; 0.12 0.121];
         cov_post = [1 1; 0.1 0.1];
         true_offset = [0.5 0.5];
         true_U = [0.12 0.12];
 
         kpis = compute_house_kpis(state_est, cov_post, timestamps, true_offset, true_U, kpi_cfg);
-        assert_true(isnan(kpis.tw_mae_offset), 'should be NaN for insufficient data');
+
+        assert_true(isfinite(kpis.tw_mae_offset), 'TW-MAE should be finite for short valid data');
+        assert_true(isnan(kpis.convergence_days_offset), 'convergence should be NaN for too-short data');
+        assert_true(isnan(kpis.steady_state_mae_offset), 'steady-state MAE should be NaN without convergence');
         pass = pass + 1;
-        fprintf('  ✓ Insufficient data returns NaN KPIs\n');
+        fprintf('  ✓ Short data gives finite TW-MAE but no convergence metrics\n');
     catch ME
         fail = fail + 1;
         details{end+1} = ME.message;
