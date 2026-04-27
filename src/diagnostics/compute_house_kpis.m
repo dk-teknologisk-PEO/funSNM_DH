@@ -3,11 +3,10 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
 %COMPUTE_HOUSE_KPIS Computes performance KPIs for a single house.
 
     % --- Force all 1D inputs to row vectors ---
-    timestamps = timestamps(:)';          % 1 x T
+    timestamps = timestamps(:)';
     true_offset_traj = true_offset_traj(:)';
     true_U_traj = true_U_traj(:)';
 
-    % State and covariance should be 2 x T, but enforce if needed
     if size(state_estimates,1) ~= 2 && size(state_estimates,2) == 2
         state_estimates = state_estimates';
     end
@@ -24,7 +23,10 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
     std_U = sqrt(covariance_posterior(2, :));
 
     %% Define valid timesteps
-    is_valid = ~isnat(timestamps);
+    % Valid = timestamp is not NaT AND state is not NaN
+    is_valid_time = ~isnat(timestamps);
+    is_valid_state = ~isnan(err_offset) & ~isnan(err_U);
+    is_valid = is_valid_time & is_valid_state;
     valid_idx = find(is_valid);
 
     if numel(valid_idx) < 2
@@ -110,7 +112,6 @@ end
 
 function [conv_days, conv_idx] = find_convergence_time_P(std_traj, dt_hours, timestamps, ...
     threshold, hold_hours, valid_idx)
-%FIND_CONVERGENCE_TIME_P Finds when posterior std first drops below threshold and stays.
 
     conv_days = NaN;
     conv_idx = NaN;
@@ -158,7 +159,6 @@ end
 
 
 function val = compute_post_conv_weighted_mae(err, is_valid, dt_hours, conv_idx, T)
-%COMPUTE_POST_CONV_WEIGHTED_MAE Time-weighted MAE after convergence.
     if ~isfinite(conv_idx)
         val = NaN;
         return;
@@ -182,7 +182,6 @@ end
 
 
 function val = compute_post_conv_std(err, is_valid, conv_idx, T)
-%COMPUTE_POST_CONV_STD Standard deviation of error after convergence.
     if ~isfinite(conv_idx)
         val = NaN;
         return;
@@ -203,7 +202,6 @@ end
 
 
 function val = compute_post_conv_max(err, is_valid, conv_idx, T)
-%COMPUTE_POST_CONV_MAX Maximum absolute error after convergence.
     if ~isfinite(conv_idx)
         val = NaN;
         return;
@@ -225,8 +223,6 @@ end
 
 function eos = compute_end_of_season_errors(state_est, cov_post, err_offset, err_U, ...
     is_valid, timestamps)
-%COMPUTE_END_OF_SEASON_ERRORS Records state, uncertainty and error at the
-%   last valid timestep before each gap of >30 days, plus final timestep.
 
     timestamps = timestamps(:)';
     is_valid = is_valid(:)';
@@ -267,7 +263,6 @@ end
 
 
 function kpis = empty_kpis()
-%EMPTY_KPIS Returns a KPI struct with all NaN values for insufficient data.
     kpis.tw_mae_offset = NaN;
     kpis.tw_mae_U = NaN;
     kpis.convergence_days_offset = NaN;

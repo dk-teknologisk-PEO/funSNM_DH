@@ -65,20 +65,45 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
         kpis = compute_house_kpis(state_est, cov_post, cs.logger.timestamps, ...
             true_trajectories{i}.offset, true_trajectories{i}.U, kpi_config);
 
-        % TEMPORARY DEBUG — remove after fixing
-        if i == 1
-            fprintf('  DEBUG house %d: T=%d, valid=%d, tw_mae=%.4f, conv_idx_off=%s, ss_mae=%.4f\n', ...
-                house_ids(i), T, sum(~isnat(cs.logger.timestamps)), ...
-                kpis.tw_mae_offset, ...
-                mat2str(kpis.convergence_days_offset), ...
-                kpis.steady_state_mae_offset);
-            fprintf('  DEBUG: timestamps class=%s, size=%s\n', ...
-                class(cs.logger.timestamps), mat2str(size(cs.logger.timestamps)));
-            fprintf('  DEBUG: state_est size=%s, cov_post size=%s\n', ...
-                mat2str(size(state_est)), mat2str(size(cov_post)));
-            fprintf('  DEBUG: true_offset size=%s\n', ...
-                mat2str(size(true_trajectories{i}.offset)));
-        end
+        % % TEMPORARY DEBUG — remove after fixing
+        % if i == 1
+        %     fprintf('  DEBUG house %d: T=%d, valid=%d, tw_mae=%.4f, conv_idx_off=%s, ss_mae=%.4f\n', ...
+        %         house_ids(i), T, sum(~isnat(cs.logger.timestamps)), ...
+        %         kpis.tw_mae_offset, ...
+        %         mat2str(kpis.convergence_days_offset), ...
+        %         kpis.steady_state_mae_offset);
+        %     fprintf('  DEBUG: timestamps class=%s, size=%s\n', ...
+        %         class(cs.logger.timestamps), mat2str(size(cs.logger.timestamps)));
+        %     fprintf('  DEBUG: state_est size=%s, cov_post size=%s\n', ...
+        %         mat2str(size(state_est)), mat2str(size(cov_post)));
+        %     fprintf('  DEBUG: true_offset size=%s\n', ...
+        %         mat2str(size(true_trajectories{i}.offset)));
+        % end
+        % if i == 1
+        %     % Check for NaN in error trajectories
+        %     err_check = state_est(1,:) - true_trajectories{i}.offset;
+        %     fprintf('  DEBUG: err_offset has %d NaN out of %d\n', sum(isnan(err_check)), T);
+        %     fprintf('  DEBUG: state_est(1,1)=%.4f, state_est(1,end)=%.4f\n', ...
+        %         state_est(1,1), state_est(1,end));
+        %     fprintf('  DEBUG: true_offset(1)=%.4f, true_offset(end)=%.4f\n', ...
+        %         true_trajectories{i}.offset(1), true_trajectories{i}.offset(end));
+        % 
+        %     % Check dt_hours directly
+        %     ts = cs.logger.timestamps(:)';
+        %     is_v = ~isnat(ts);
+        %     v_idx = find(is_v);
+        %     dt_h = zeros(1, T);
+        %     for kk = 2:numel(v_idx)
+        %         dt_h(v_idx(kk)) = hours(ts(v_idx(kk)) - ts(v_idx(kk-1)));
+        %     end
+        %     dt_h(v_idx(1)) = 1;
+        %     dt_h = min(dt_h, 48);
+        %     total_t = sum(dt_h(is_v));
+        %     tw = sum(dt_h(is_v) .* abs(err_check(is_v))) / total_t;
+        %     fprintf('  DEBUG: manual tw_mae=%.6f, total_time=%.1f\n', tw, total_t);
+        %     fprintf('  DEBUG: any NaN in dt_h(is_v)? %d\n', any(isnan(dt_h(is_v))));
+        %     fprintf('  DEBUG: any NaN in err_check(is_v)? %d\n', any(isnan(err_check(is_v))));
+        % end
 
         tw_mae_offset(i) = kpis.tw_mae_offset;
         tw_mae_U(i) = kpis.tw_mae_U;
