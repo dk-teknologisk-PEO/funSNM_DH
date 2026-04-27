@@ -1,17 +1,6 @@
 function all_kpi_summaries = post_process_all_csacs(all_cs, all_true_traj, csac_ids, ...
     network_id, output_folder, kpi_config)
 %POST_PROCESS_ALL_CSACS Runs post-processing for all CSACs after the main loop.
-%
-%   Args:
-%       all_cs (cell array): CSAC state structs after processing.
-%       all_true_traj (cell array): True trajectory cells per CSAC.
-%       csac_ids (int array): CSAC identifiers.
-%       network_id (int): Network identifier.
-%       output_folder (char): Output directory.
-%       kpi_config (struct): KPI configuration.
-%
-%   Returns:
-%       all_kpi_summaries (table): Aggregated KPI summary across all CSACs.
 
     all_kpi_summaries = table();
 
@@ -25,12 +14,12 @@ function all_kpi_summaries = post_process_all_csacs(all_cs, all_true_traj, csac_
 
         % Compute and save KPIs
         kpi_summary = compute_and_save_network_kpis(cs, csac_id, output_folder, ...
-            kpi_config, true_traj);
+            kpi_config, true_traj, network_id);
         all_kpi_summaries = [all_kpi_summaries; kpi_summary]; %#ok<AGROW>
 
         % Plot diagnostics
         plot_diagnostics(cs.logger, cs.ground_truth, csac_id, network_id, output_folder);
-        save_logger_to_csv(cs.logger, output_folder, strcat('ukf_csac_', string(csac_id)));
+        save_logger_to_csv(cs.logger, output_folder, sprintf('ukf_network_%d_csac_%d', network_id, csac_id));
         save_diagnostic_summary(cs.logger, cs.ground_truth, csac_id, output_folder, 'ukf');
         save_diagnostic_summary_detailed(cs.logger, cs.ground_truth, csac_id, output_folder, 'ukf');
         save_daily_diagnostics(cs.logger, cs.ground_truth, csac_id, output_folder, 'ukf');
