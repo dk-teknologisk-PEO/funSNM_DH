@@ -14,7 +14,7 @@ function plot_diagnostics(logger, ground_truth, csac_id, network_name, output_fo
     hold on;
     for i = 1:num_houses
         err = squeeze(logger.state_estimates(1, i, :) - ground_truth.true_offset(i));
-        std_val = squeeze(sqrt(logger.covariance_posterior(1, i, :)));
+        std_val = squeeze(sqrt(abs(logger.covariance_posterior(1, i, :))));
         valid = ~isnat(timestamps') & ~isnan(err);
 
         % Base line

@@ -4,6 +4,20 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
     init_offset, init_U, init_std_offset, init_std_U, ...
     final_offset, final_U, final_std_offset, final_std_U, ...
     output_folder)
+
+    % Guard against complex values from negative covariance
+    init_offset = real(init_offset);
+    init_U = real(init_U);
+    init_std_offset = real(init_std_offset);
+    init_std_U = real(init_std_U);
+    final_offset = real(final_offset);
+    final_U = real(final_U);
+    final_std_offset = real(final_std_offset);
+    final_std_U = real(final_std_U);
+    true_offset_initial = real(true_offset_initial);
+    true_offset_final = real(true_offset_final);
+    true_U_initial = real(true_U_initial);
+    true_U_final = real(true_U_final);
 %PLOT_KPI_BAR_CHARTS Generates bar charts comparing initial and final estimates.
 %
 %   Offset plot:

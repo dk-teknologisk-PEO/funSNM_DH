@@ -49,7 +49,7 @@ drift_config.offset_step = 0;
 [T_soil_C, T_air_C] = soilTemp(config);
 daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
 
-networks = config.project.datasets.datasets;
+networks = config.project.datasets.datasets(:)';  % force row vector
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'), '/ukf');
 w = waitbar(0.0, "Starting analysis");
 
@@ -60,6 +60,8 @@ all_kpi_summaries = table();
 %% MAIN PROCESSING LOOP
 %% ================================================================
 for network_id = networks
+    fprintf('DEBUG: network_id = %s, class = %s, size = %s\n', ...
+    mat2str(network_id), class(network_id), mat2str(size(network_id)));
     [meter_data, network_data, topology] = importData(config, network_id);
     timestamps = unique(meter_data.timestamp);
     csac_ids = [topology.cul_de_sacs.id];
