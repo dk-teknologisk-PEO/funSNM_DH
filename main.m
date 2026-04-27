@@ -39,6 +39,7 @@ kpi_config.convergence_hold_days = 14;   % active days
 
 % Drift configuration — change these to test different scenarios
 drift_config.type = 'none';              % 'none', 'linear', or 'step'
+drift_config.house_index = 1;            % which house drifts (1-based index)
 drift_config.offset_drift_per_year = 0;  % °C/year (for 'linear')
 drift_config.step_time = NaT;            % datetime (for 'step')
 drift_config.offset_step = 0;            % °C (for 'step')

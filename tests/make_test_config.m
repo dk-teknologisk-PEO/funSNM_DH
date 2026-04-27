@@ -43,4 +43,9 @@ function config = make_test_config()
     config.project.simulation.offset_max = 2.0;
     config.project.simulation.U_init_mean = 0.12;
     config.project.simulation.U_init_std = 0.01;
+
+    config.project.consecutive_rejection.max_consecutive = 10;
+    config.project.consecutive_rejection.P_inflation_factor = 5.0;
+    config.project.consecutive_rejection.P_max_offset = 2.0;
+    config.project.consecutive_rejection.P_max_U = 0.1;
 end

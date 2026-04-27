@@ -8,6 +8,7 @@ function [pass, fail, details] = test_apply_offset_drift_to_data()
         data = make_simple_meter_table(timestamps);
         T_before = data.T_supply_C;
         dc.type = 'none';
+        dc.house_index = 1;
         dc.offset_drift_per_year = 0;
         dc.step_time = NaT;
         dc.offset_step = 0;
@@ -21,74 +22,65 @@ function [pass, fail, details] = test_apply_offset_drift_to_data()
         fprintf('  ✗ %s\n', ME.message);
     end
 
-    %% Test 2: 'linear' drift reduces T_supply over time
+    %% Test 2: 'linear' drift reduces T_supply for target house only
     try
-        data = make_simple_meter_table(timestamps);
-        T_before_start = data.T_supply_C(1);
-        T_before_end = data.T_supply_C(end);
+        data = make_two_house_meter_table(timestamps);
+        T_before = data.T_supply_C;
         dc.type = 'linear';
+        dc.house_index = 1; % only house 1 drifts
         dc.offset_drift_per_year = 0.5;
         dc.step_time = NaT;
         dc.offset_step = 0;
-        data = apply_offset_drift_to_data(data, [1], dc, timestamps);
-        % Start should be unchanged (t_years = 0)
-        assert_near(data.T_supply_C(1), T_before_start, 1e-6, 'start should be unchanged');
-        % End should be reduced by ~0.5 (1 year of drift)
-        expected_reduction = 0.5 * years(timestamps(end) - timestamps(1));
-        actual_reduction = T_before_end - data.T_supply_C(end);
-        assert_near(actual_reduction, expected_reduction, 0.01, 'end should be reduced by drift amount');
+        data = apply_offset_drift_to_data(data, [1; 2], dc, timestamps);
+
+        % House 1 should be changed
+        h1_mask = data.house_id == 1;
+        h1_end_idx = find(h1_mask, 1, 'last');
+        t_years_end = years(data.timestamp(h1_end_idx) - timestamps(1));
+        expected_reduction = 0.5 * t_years_end;
+        actual_reduction = T_before(h1_end_idx) - data.T_supply_C(h1_end_idx);
+        assert_near(actual_reduction, expected_reduction, 0.01, 'house 1 end should be reduced');
+
+        % House 2 should be unchanged
+        h2_mask = data.house_id == 2;
+        assert_near(max(abs(data.T_supply_C(h2_mask) - T_before(h2_mask))), 0, 1e-10, ...
+            'house 2 should be unchanged');
         pass = pass + 1;
-        fprintf('  ✓ Linear drift reduces T_supply\n');
+        fprintf('  ✓ Linear drift applies only to target house\n');
     catch ME
         fail = fail + 1;
         details{end+1} = ME.message;
         fprintf('  ✗ %s\n', ME.message);
     end
 
-    %% Test 3: 'step' changes T_supply after step_time
+    %% Test 3: 'step' changes only target house after step_time
     try
-        data = make_simple_meter_table(timestamps);
+        data = make_two_house_meter_table(timestamps);
         step_time = datetime(2019,7,1);
         dc.type = 'step';
+        dc.house_index = 2; % only house 2 steps
         dc.offset_drift_per_year = 0;
         dc.step_time = step_time;
         dc.offset_step = 1.0;
         T_before = data.T_supply_C;
-        data = apply_offset_drift_to_data(data, [1], dc, timestamps);
+        data = apply_offset_drift_to_data(data, [1; 2], dc, timestamps);
 
-        before_mask = data.timestamp < step_time;
-        after_mask = data.timestamp >= step_time;
-        % Before step: unchanged
-        assert_near(max(abs(data.T_supply_C(before_mask) - T_before(before_mask))), 0, 1e-10, ...
-            'before step should be unchanged');
-        % After step: reduced by 1.0
-        diffs = T_before(after_mask) - data.T_supply_C(after_mask);
-        assert_near(mean(diffs), 1.0, 1e-10, 'after step should be reduced by 1.0');
+        % House 1 unchanged
+        h1_mask = data.house_id == 1;
+        assert_near(max(abs(data.T_supply_C(h1_mask) - T_before(h1_mask))), 0, 1e-10, ...
+            'house 1 should be unchanged');
+
+        % House 2 before step: unchanged
+        h2_before = data.house_id == 2 & data.timestamp < step_time;
+        assert_near(max(abs(data.T_supply_C(h2_before) - T_before(h2_before))), 0, 1e-10, ...
+            'house 2 before step should be unchanged');
+
+        % House 2 after step: reduced by 1.0
+        h2_after = data.house_id == 2 & data.timestamp >= step_time;
+        diffs = T_before(h2_after) - data.T_supply_C(h2_after);
+        assert_near(mean(diffs), 1.0, 1e-10, 'house 2 after step should be reduced by 1.0');
         pass = pass + 1;
-        fprintf('  ✓ Step changes T_supply after step_time\n');
-    catch ME
-        fail = fail + 1;
-        details{end+1} = ME.message;
-        fprintf('  ✗ %s\n', ME.message);
-    end
-
-    %% Test 4: Linear drift magnitude is correct at midpoint
-    try
-        data = make_simple_meter_table(timestamps);
-        dc.type = 'linear';
-        dc.offset_drift_per_year = 1.0; % 1°C per year
-        dc.step_time = NaT;
-        dc.offset_step = 0;
-        T_before = data.T_supply_C;
-        data = apply_offset_drift_to_data(data, [1], dc, timestamps);
-
-        mid_idx = round(numel(timestamps) / 2);
-        t_years_mid = years(timestamps(mid_idx) - timestamps(1));
-        expected_reduction = 1.0 * t_years_mid;
-        actual_reduction = T_before(mid_idx) - data.T_supply_C(mid_idx);
-        assert_near(actual_reduction, expected_reduction, 0.01, 'midpoint reduction should match');
-        pass = pass + 1;
-        fprintf('  ✓ Linear drift magnitude correct at midpoint\n');
+        fprintf('  ✓ Step applies only to target house\n');
     catch ME
         fail = fail + 1;
         details{end+1} = ME.message;

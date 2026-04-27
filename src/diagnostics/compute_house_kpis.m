@@ -4,17 +4,11 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
 %
 %   Args:
 %       state_estimates (2xT matrix): Estimated [offset; U] at each timestep.
-%       covariance_posterior (2xT matrix): Posterior variances [P_offset; P_U] 
-%           at each timestep (diagonal elements of P).
+%       covariance_posterior (2xT matrix): Posterior variances [P_offset; P_U].
 %       timestamps (1xT datetime): Timestamp for each step.
 %       true_offset_traj (1xT double): True offset at each timestep.
 %       true_U_traj (1xT double): True U-value at each timestep.
-%       kpi_config (struct): KPI parameters:
-%           .offset_tolerance (scalar): Error band for offset [°C].
-%           .U_tolerance (scalar): Error band for U [W/m/K].
-%           .convergence_P_offset (scalar): P threshold for offset convergence [°C].
-%           .convergence_P_U (scalar): P threshold for U convergence [W/m/K].
-%           .convergence_hold_days (int): Active days P must stay below threshold.
+%       kpi_config (struct): KPI parameters.
 %
 %   Returns:
 %       kpis (struct): Computed KPIs.
@@ -28,10 +22,17 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
     std_U = sqrt(covariance_posterior(2, :));
 
     %% Find active timesteps
-    % Active = timestamp is valid AND state has been updated at least once
+    % A timestep is active if:
+    % 1. The timestamp is valid (not NaT)
+    % 2. The covariance has changed from the initial value (indicating an update occurred)
     is_valid = ~isnat(timestamps);
+    
+    % Detect activity by looking at covariance changes — more robust than state changes
+    % because the state might not change much but covariance always changes on update
+    cov_changed = [false, any(diff(covariance_posterior, 1, 2) ~= 0, 1)];
     state_changed = [false, any(diff(state_estimates, 1, 2) ~= 0, 1)];
-    has_been_updated = cumsum(state_changed) > 0;
+    either_changed = cov_changed | state_changed;
+    has_been_updated = cumsum(either_changed) > 0;
     is_active = is_valid & has_been_updated;
 
     active_idx = find(is_active);
@@ -49,14 +50,22 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
     end
     dt_hours(active_idx(1)) = 1; % nominal weight for first active step
 
+    % Cap large gaps to prevent off-season gaps from dominating the average
+    max_dt_hours = 48; % treat gaps > 48h as 48h to avoid off-season domination
+    dt_hours = min(dt_hours, max_dt_hours);
+
     total_time = sum(dt_hours(is_active));
 
     %% KPI 1: Time-Weighted MAE
-    kpis.tw_mae_offset = sum(dt_hours(is_active) .* abs(err_offset(is_active))) / total_time;
-    kpis.tw_mae_U = sum(dt_hours(is_active) .* abs(err_U(is_active))) / total_time;
+    if total_time > 0
+        kpis.tw_mae_offset = sum(dt_hours(is_active) .* abs(err_offset(is_active))) / total_time;
+        kpis.tw_mae_U = sum(dt_hours(is_active) .* abs(err_U(is_active))) / total_time;
+    else
+        kpis.tw_mae_offset = NaN;
+        kpis.tw_mae_U = NaN;
+    end
 
     %% KPI 2: Convergence Time (uncertainty-based)
-    % Convergence = when the posterior std drops below threshold and stays there
     hold_hours = kpi_config.convergence_hold_days * 24;
 
     [kpis.convergence_days_offset, conv_idx_offset] = find_convergence_time_P(...
@@ -109,8 +118,6 @@ end
 function [conv_days, conv_idx] = find_convergence_time_P(std_traj, dt_hours, timestamps, ...
     threshold, hold_hours, active_idx)
 %FIND_CONVERGENCE_TIME_P Finds when posterior std first drops below threshold and stays.
-%   Returns days from first active timestep to convergence, and the
-%   timestep index where convergence occurs. NaN if never converges.
 
     conv_days = NaN;
     conv_idx = NaN;
@@ -129,7 +136,6 @@ function [conv_days, conv_idx] = find_convergence_time_P(std_traj, dt_hours, tim
             continue;
         end
 
-        % Walk forward accumulating active time below threshold
         accumulated_hours = 0;
         broke_out = false;
 
@@ -150,7 +156,6 @@ function [conv_days, conv_idx] = find_convergence_time_P(std_traj, dt_hours, tim
             end
         end
 
-        % Reached end of data while still below threshold
         if ~broke_out && accumulated_hours >= hold_hours
             conv_idx = si;
             conv_days = days(timestamps(si) - first_active_time);

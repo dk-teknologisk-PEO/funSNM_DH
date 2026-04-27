@@ -1,26 +1,6 @@
 function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
     meter_data, num_timestamps, Q_base, R_base, P_base, innovation_gate_initial, config, network_id)
 %INITIALIZE_CSAC_STATE Creates all per-CSAC state needed for the main loop.
-%
-%   Generates true meter offsets per house using a deterministic seed
-%   derived from (network_id, house_id), applies them to meter supply
-%   temperatures, and initializes UKF states at the prior.
-%
-%   Args:
-%       topology (struct): Full network topology.
-%       topology_csac (struct array): Topology entries for houses in this CSAC.
-%       houses_csac (logical): Mask of houses belonging to this CSAC.
-%       meter_data (table): Full meter data table for the network.
-%       num_timestamps (int): Total number of timesteps for logger allocation.
-%       Q_base (2x2 matrix): Base process noise covariance.
-%       R_base (scalar): Base measurement noise variance.
-%       P_base (2x2 matrix): Initial state covariance.
-%       innovation_gate_initial (scalar): Initial innovation gate value.
-%       config (struct): Project configuration (for simulation settings).
-%       network_id (int): Network identifier (used as seed base).
-%
-%   Returns:
-%       csac (struct): Complete CSAC state struct.
 
     num_houses = sum(houses_csac);
     house_ids = sort([topology.houses(houses_csac).id]);
@@ -51,9 +31,6 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
     meter_data_csac = join(meter_data_csac, csac_table, 'Keys', 'house_id');
 
     %% Apply true offsets to meter data
-    % Measurement model: z_predicted = T_service_out - offset
-    % Positive offset => meter reads LOWER than pipe outlet
-    % So: T_supply_measured = T_supply_true - offset
     for i = 1:num_houses
         mask = meter_data_csac.house_id == house_ids(i);
         meter_data_csac.T_supply_C(mask) = meter_data_csac.T_supply_C(mask) - true_offset(i);
@@ -76,7 +53,7 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
         ukf_states_snapshot{i}.P = ukf_states{i}.P;
     end
 
-    %% Restore RNG to non-deterministic state
+    %% Restore RNG
     rng('shuffle');
 
     %% Initialize logger and log initial states
@@ -100,6 +77,7 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
     csac.last_update_timestamp = NaT(num_houses, 1);
     csac.gate_reject_count = 0;
     csac.gate_accept_count = 0;
+    csac.consecutive_rejection_counters = zeros(num_houses, 1);
     csac.season_state = initialize_season_state();
     csac.logger = logger;
 end

@@ -27,6 +27,7 @@ test_functions = {
     @test_apply_offset_drift_to_data
     @test_build_daily_T_air_max_table
     @test_print_csac_summary
+    @test_check_consecutive_rejections
 };
 
 for i = 1:numel(test_functions)

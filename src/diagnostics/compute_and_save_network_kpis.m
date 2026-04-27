@@ -38,8 +38,11 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
     stability_U = nan(num_houses, 1);
     max_exc_offset = nan(num_houses, 1);
     max_exc_U = nan(num_houses, 1);
-    true_offset_val = nan(num_houses, 1);
-    true_U_val = nan(num_houses, 1);
+    true_offset_initial = nan(num_houses, 1);
+    true_offset_final = nan(num_houses, 1);
+    true_offset_drift = nan(num_houses, 1);
+    true_U_initial = nan(num_houses, 1);
+    true_U_final = nan(num_houses, 1);
     final_err_offset = nan(num_houses, 1);
     final_err_U = nan(num_houses, 1);
 
@@ -72,10 +75,14 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
         stability_U(i) = kpis.stability_index_U;
         max_exc_offset(i) = kpis.max_excursion_offset;
         max_exc_U(i) = kpis.max_excursion_U;
-        true_offset_val(i) = cs.ground_truth.true_offset(i);
-        true_U_val(i) = cs.ground_truth.true_U(i);
         final_err_offset(i) = kpis.final_error_offset;
         final_err_U(i) = kpis.final_error_U;
+
+        true_offset_initial(i) = true_trajectories{i}.offset(1);
+        true_offset_final(i) = true_trajectories{i}.offset(end);
+        true_offset_drift(i) = true_offset_final(i) - true_offset_initial(i);
+        true_U_initial(i) = true_trajectories{i}.U(1);
+        true_U_final(i) = true_trajectories{i}.U(end);
 
         initial_offsets(i) = kpis.initial_state.offset;
         initial_U(i) = kpis.initial_state.U;
@@ -86,7 +93,6 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
         final_std_offset(i) = kpis.final_state.std_offset;
         final_std_U(i) = kpis.final_state.std_U;
 
-        % Append end-of-season errors
         if ~isempty(kpis.end_of_season_errors)
             eos = kpis.end_of_season_errors;
             eos.house_id = repmat(house_ids(i), height(eos), 1);
@@ -96,7 +102,9 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
     end
 
     %% Build summary table
-    summary = table(house_ids, true_offset_val, true_U_val, ...
+    summary = table(house_ids, ...
+        true_offset_initial, true_offset_final, true_offset_drift, ...
+        true_U_initial, true_U_final, ...
         tw_mae_offset, tw_mae_U, ...
         conv_days_offset, conv_days_U, ...
         ss_mae_offset, ss_mae_U, ...
@@ -134,6 +142,8 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
     fprintf('  Max excursion U:      mean=%.4f W/m/K\n', mean(max_exc_U, 'omitnan'));
     fprintf('  Final error offset:   mean=%.3f °C\n', mean(abs(final_err_offset), 'omitnan'));
     fprintf('  Final error U:        mean=%.4f W/m/K\n', mean(abs(final_err_U), 'omitnan'));
+    fprintf('  True offset drift:    mean=%.3f °C,    max=%.3f °C\n', ...
+        mean(true_offset_drift, 'omitnan'), max(abs(true_offset_drift)));
     if ~isempty(all_eos)
         fprintf('  End-of-season errors (all houses):\n');
         for s = unique(all_eos.season)'
@@ -146,7 +156,8 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
 
     %% Generate visualization
     plot_kpi_bar_charts(house_ids, csac_id, ...
-        true_offset_val, true_U_val, ...
+        true_offset_initial, true_offset_final, ...
+        true_U_initial, true_U_final, ...
         initial_offsets, initial_U, initial_std_offset, initial_std_U, ...
         final_offsets, final_U_vals, final_std_offset, final_std_U, ...
         output_folder);
