@@ -8,6 +8,10 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
     %% Read simulation config
     sim_cfg = config.project.simulation;
 
+    %% Determine CSAC ID for seeding
+    % Find which CSAC these houses belong to
+    csac_id = topology_csac(1).cul_de_sac_id;
+
     %% Generate true offsets (reproducible per network + house)
     true_offset = zeros(num_houses, 1);
     for i = 1:num_houses
@@ -53,6 +57,23 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
         ukf_states_snapshot{i}.P = ukf_states{i}.P;
     end
 
+    %% Initialize CSAC pipe U-value
+    % True value from topology (stored for evaluation)
+    U_csac_true = topology.pipe_parameters.csac_pipe.insulation_W_m_K;
+
+    % Initialize at nominal value with seeded randomness
+    rng(network_id * 10000 + csac_id + 2e6, 'twister');
+    U_csac_init = sim_cfg.U_csac_init_mean + sim_cfg.U_csac_init_std * randn();
+
+    % Clamp to physical bounds
+    if isfield(config.project, 'csac_U_estimation')
+        U_csac_init = max(config.project.csac_U_estimation.U_min, ...
+                     min(config.project.csac_U_estimation.U_max, U_csac_init));
+    end
+
+    fprintf('  CSAC %d pipe U-value: true=%.4f, init=%.4f W/m/K\n', ...
+        csac_id, U_csac_true, U_csac_init);
+
     %% Restore RNG
     rng('shuffle');
 
@@ -66,7 +87,8 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
     %% Pack into struct
     csac.num_houses = num_houses;
     csac.house_ids = house_ids;
-    csac.U_csac = topology.pipe_parameters.csac_pipe.insulation_W_m_K;
+    csac.U_csac = U_csac_init;
+    csac.U_csac_true = U_csac_true;
     csac.ground_truth = ground_truth;
     csac.meter_data = meter_data_csac;
     csac.ukf_states = ukf_states;
@@ -78,6 +100,8 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
     csac.gate_reject_count = 0;
     csac.gate_accept_count = 0;
     csac.consecutive_rejection_counters = zeros(num_houses, 1);
+    csac.csac_U_update_counter = 0;
+    csac.csac_U_history = U_csac_init;  % track evolution over time
     csac.season_state = initialize_season_state();
     csac.logger = logger;
 end
