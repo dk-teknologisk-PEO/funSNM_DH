@@ -1,5 +1,6 @@
 % main.m
 % Main orchestration script for district heating UKF analysis.
+% Processes all CSACs simultaneously at each timestep.
 
 % === CLEANUP FROM PREVIOUS RUNS ===
 close all force
@@ -31,99 +32,97 @@ innovation_gate_initial = config.project.initialization.ukf.state_uncertainty_of
 fprintf('Hard innovation gate set to %.2f °C\n', config.project.initialization.max_innovation_C);
 
 % KPI configuration
-kpi_config.offset_tolerance = 0.3;       % °C
-kpi_config.U_tolerance = 0.02;           % W/m/K
-kpi_config.convergence_P_offset = 0.5;   % °C std threshold
-kpi_config.convergence_P_U = 0.05;       % W/m/K std threshold
-kpi_config.convergence_hold_days = 14;   % active days
+kpi_config.offset_tolerance = 0.3;
+kpi_config.U_tolerance = 0.02;
+kpi_config.convergence_P_offset = 0.5;
+kpi_config.convergence_P_U = 0.05;
+kpi_config.convergence_hold_days = 14;
 
-% Drift configuration — change these to test different scenarios
-drift_config.type = 'none';              % 'none', 'linear', or 'step'
-drift_config.house_index = 1;            % which house drifts (1-based index)
-drift_config.offset_drift_per_year = 0;  % °C/year (for 'linear')
-drift_config.step_time = NaT;            % datetime (for 'step')
-drift_config.offset_step = 0;            % °C (for 'step')
+% Drift configuration
+drift_config.type = 'none';
+drift_config.house_index = 1;
+drift_config.offset_drift_per_year = 0;
+drift_config.step_time = NaT;
+drift_config.offset_step = 0;
 
 % Load weather data and build lookup table
 [T_soil_C, T_air_C] = soilTemp(config);
 daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
 
-networks = config.project.datasets.datasets;
+networks = config.project.datasets.datasets(:)';  % force row vector
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'), '/ukf');
 w = waitbar(0.0, "Starting analysis");
 
-% Collect all KPI summaries across the run
+% Collect all KPI summaries across all networks
 all_kpi_summaries = table();
 
 %% ================================================================
 %% MAIN PROCESSING LOOP
 %% ================================================================
 for network_id = networks
+    fprintf('DEBUG: network_id = %s, class = %s, size = %s\n', ...
+    mat2str(network_id), class(network_id), mat2str(size(network_id)));
     [meter_data, network_data, topology] = importData(config, network_id);
     timestamps = unique(meter_data.timestamp);
     csac_ids = [topology.cul_de_sacs.id];
+    num_csacs = numel(csac_ids);
 
-    for csac = csac_ids
+    %% ============================================================
+    %% INITIALIZE ALL CSACS
+    %% ============================================================
+    fprintf('\n=== Initializing network %d: %d CSACs ===\n', network_id, num_csacs);
+    [all_cs, all_true_traj] = initialize_all_csacs(topology, meter_data, timestamps, ...
+        Q_base, R_base, P_base, innovation_gate_initial, config, network_id, drift_config);
 
-        %% Initialize CSAC state (includes base offset generation and application)
-        houses_csac = ([topology.houses.cul_de_sac_id] == csac);
-        topology_csac = topology.houses(houses_csac);
-        cs = initialize_csac_state(topology, topology_csac, houses_csac, ...
-            meter_data, length(timestamps), Q_base, R_base, P_base, ...
-            innovation_gate_initial, config, network_id);
+    %% ============================================================
+    %% TIMESTEP LOOP (all CSACs processed per timestep)
+    %% ============================================================
+    fprintf('Starting timestep loop: %d timesteps, %d CSACs\n', length(timestamps), num_csacs);
 
-        %% Apply offset drift to meter data (additional to base offset)
-        cs.meter_data = apply_offset_drift_to_data(...
-            cs.meter_data, cs.house_ids, drift_config, timestamps);
+    for t = 1:length(timestamps)
+        if mod(t, 50) == 0
+            waitbar(t / length(timestamps), w, ...
+                sprintf("Timestep %d/%d, network %d (%d CSACs)", ...
+                t, length(timestamps), network_id, num_csacs));
+        end
 
-        %% Generate true trajectories for KPI evaluation
-        true_trajectories = generate_true_trajectories(...
-            cs.ground_truth, timestamps, drift_config);
+        time = timestamps(t);
 
-        %% Timestep loop
-        waitbar(csac / length(csac_ids), w, sprintf("CSAC %d/%d, network %d", ...
-            csac, length(csac_ids)-1, network_id));
+        % Look up weather data once per timestep (shared across all CSACs)
+        current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
+        if isempty(current_T_soil_C)
+            continue
+        end
 
-        for t = 1:length(timestamps)
-            if mod(t, 10) == 0
-                waitbar(t / (length(timestamps) * length(csac_ids)) + csac / length(csac_ids), w, ...
-                    sprintf("Timestep %d/%d, CSAC %d/%d, network %d", ...
-                    t, length(timestamps), csac, length(csac_ids)-1, network_id));
-            end
+        % Process each CSAC at this timestep
+        for c = 1:num_csacs
+            csac_id = csac_ids(c);
+            cs = all_cs{c};
 
-            time = timestamps(t);
+            % Extract this CSAC's data for this timestep
             current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
             current_data = sortrows(current_data, 'house_id');
-            current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
 
-            if isempty(current_data) || isempty(current_T_soil_C)
+            if isempty(current_data)
                 continue
             end
 
+            % Process one timestep for this CSAC
             cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
-                daily_T_air_max_table, P_base, config, csac);
-        end
+                daily_T_air_max_table, P_base, config, csac_id);
 
-        %% Post-processing: statistics, KPIs, and output
-        print_csac_summary(csac, cs.gate_accept_count, cs.gate_reject_count, cs.season_state);
-
-        kpi_summary = compute_and_save_network_kpis(cs, csac, output_folder_ukf, ...
-            kpi_config, true_trajectories);
-        all_kpi_summaries = [all_kpi_summaries; kpi_summary]; %#ok<AGROW>
-
-        plot_diagnostics(cs.logger, cs.ground_truth, csac, network_id, output_folder_ukf);
-        save_logger_to_csv(cs.logger, output_folder_ukf, strcat('ukf_csac_', string(csac)));
-        save_diagnostic_summary(cs.logger, cs.ground_truth, csac, output_folder_ukf, 'ukf');
-        save_diagnostic_summary_detailed(cs.logger, cs.ground_truth, csac, output_folder_ukf, 'ukf');
-        save_daily_diagnostics(cs.logger, cs.ground_truth, csac, output_folder_ukf, 'ukf');
-
-        figs = findall(0, 'Type', 'figure');
-        for fig = figs'
-            if ~strcmp(get(fig, 'Tag'), 'TMWWaitbar')
-                close(fig);
-            end
+            % Store updated state back
+            all_cs{c} = cs;
         end
     end
+
+    %% ============================================================
+    %% POST-PROCESSING (all CSACs)
+    %% ============================================================
+    fprintf('\n=== Post-processing network %d ===\n', network_id);
+    network_kpis = post_process_all_csacs(all_cs, all_true_traj, csac_ids, ...
+        network_id, output_folder_ukf, kpi_config);
+    all_kpi_summaries = [all_kpi_summaries; network_kpis]; %#ok<AGROW>
 end
 
 %% Save aggregate KPI summary

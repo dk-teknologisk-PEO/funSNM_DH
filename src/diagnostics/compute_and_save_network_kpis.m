@@ -1,4 +1,4 @@
-function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi_config, true_trajectories)
+function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi_config, true_trajectories, network_id)
 %COMPUTE_AND_SAVE_NETWORK_KPIS Computes KPIs for all houses in a CSAC,
 %   saves CSV results and generates visualization plots.
 %
@@ -158,10 +158,17 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
         mkdir(output_folder);
     end
 
-    writetable(summary, fullfile(output_folder, sprintf('kpis_csac_%d.csv', csac_id)));
+    % Use network_id in filenames if provided
+    if nargin >= 6 && ~isempty(network_id)
+        prefix = sprintf('network_%d_csac_%d', network_id, csac_id);
+    else
+        prefix = sprintf('csac_%d', csac_id);
+    end
+
+    writetable(summary, fullfile(output_folder, sprintf('kpis_%s.csv', prefix)));
 
     if ~isempty(all_eos)
-        writetable(all_eos, fullfile(output_folder, sprintf('end_of_season_errors_csac_%d.csv', csac_id)));
+        writetable(all_eos, fullfile(output_folder, sprintf('end_of_season_errors_%s.csv', prefix)));
     end
 
     %% Print summary
@@ -195,10 +202,16 @@ function summary = compute_and_save_network_kpis(cs, csac_id, output_folder, kpi
     fprintf('===========================\n\n');
 
     %% Generate visualization
+    if nargin >= 6 && ~isempty(network_id)
+        plot_prefix = network_id;
+    else
+        plot_prefix = [];
+    end
+
     plot_kpi_bar_charts(house_ids, csac_id, ...
         true_offset_initial, true_offset_final, ...
         true_U_initial, true_U_final, ...
         initial_offsets, initial_U, initial_std_offset, initial_std_U, ...
         final_offsets, final_U_vals, final_std_offset, final_std_U, ...
-        output_folder);
+        output_folder, plot_prefix);
 end

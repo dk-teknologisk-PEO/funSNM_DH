@@ -3,19 +3,31 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
     true_U_initial, true_U_final, ...
     init_offset, init_U, init_std_offset, init_std_U, ...
     final_offset, final_U, final_std_offset, final_std_U, ...
-    output_folder)
+    output_folder, network_id)
 %PLOT_KPI_BAR_CHARTS Generates bar charts comparing initial and final estimates.
-%
-%   Offset plot:
-%     - initial estimate ± 2σ
-%     - final estimate ± 2σ
-%     - true initial value
-%     - true final value
-%
-%   U-value plot:
-%     - initial estimate ± 2σ
-%     - final estimate ± 2σ
-%     - true initial/final values (typically identical)
+
+    % Guard against complex values from negative covariance
+    init_offset = real(init_offset);
+    init_U = real(init_U);
+    init_std_offset = real(init_std_offset);
+    init_std_U = real(init_std_U);
+    final_offset = real(final_offset);
+    final_U = real(final_U);
+    final_std_offset = real(final_std_offset);
+    final_std_U = real(final_std_U);
+    true_offset_initial = real(true_offset_initial);
+    true_offset_final = real(true_offset_final);
+    true_U_initial = real(true_U_initial);
+    true_U_final = real(true_U_final);
+
+    % Build filename prefix
+    if nargin >= 16 && ~isempty(network_id)
+        prefix = sprintf('network_%d_csac_%d', network_id, csac_id);
+        title_prefix = sprintf('Network %d, CSAC %d', network_id, csac_id);
+    else
+        prefix = sprintf('csac_%d', csac_id);
+        title_prefix = sprintf('CSAC %d', csac_id);
+    end
 
     n = numel(house_ids);
     x = 1:n;
@@ -25,9 +37,7 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
         mkdir(output_folder);
     end
 
-    %% ============================================================
     %% Figure 1: Offset Estimates
-    %% ============================================================
     fig1 = figure('Visible', 'off', 'Position', [100, 100, 1000, 500]);
 
     bar_width = 0.35;
@@ -51,17 +61,15 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
     set(gca, 'XTick', x, 'XTickLabel', house_labels);
     xlabel('House');
     ylabel('Offset [°C]');
-    title(sprintf('CSAC %d — Offset: Initial vs Final Estimate (95%% CI)', csac_id));
+    title(sprintf('%s — Offset: Initial vs Final Estimate (95%% CI)', title_prefix));
     legend('Location', 'best');
     grid on;
     hold off;
 
-    saveas(fig1, fullfile(output_folder, sprintf('kpi_offset_bar_csac_%d.png', csac_id)));
+    saveas(fig1, fullfile(output_folder, sprintf('kpi_offset_bar_%s.png', prefix)));
     close(fig1);
 
-    %% ============================================================
     %% Figure 2: U-Value Estimates
-    %% ============================================================
     fig2 = figure('Visible', 'off', 'Position', [100, 100, 1000, 500]);
 
     bar(x - bar_width/2, init_U, bar_width, ...
@@ -83,11 +91,11 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
     set(gca, 'XTick', x, 'XTickLabel', house_labels);
     xlabel('House');
     ylabel('U-value [W/m/K]');
-    title(sprintf('CSAC %d — U-value: Initial vs Final Estimate (95%% CI)', csac_id));
+    title(sprintf('%s — U-value: Initial vs Final Estimate (95%% CI)', title_prefix));
     legend('Location', 'best');
     grid on;
     hold off;
 
-    saveas(fig2, fullfile(output_folder, sprintf('kpi_U_bar_csac_%d.png', csac_id)));
+    saveas(fig2, fullfile(output_folder, sprintf('kpi_U_bar_%s.png', prefix)));
     close(fig2);
 end
