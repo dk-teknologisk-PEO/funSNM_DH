@@ -1,43 +1,22 @@
-function csac = initialize_csac_state(topology, topology_csac, houses_csac, meter_data, num_timestamps, Q_base, R_base, P_base, innovation_gate_initial)
+function csac = initialize_csac_state(topology, topology_csac, houses_csac, ...
+    meter_data, num_timestamps, Q_base, R_base, P_base, innovation_gate_initial, config, network_id)
 %INITIALIZE_CSAC_STATE Creates all per-CSAC state needed for the main loop.
-%
-%   Packages filter states, snapshots, loggers, gate counters, and
-%   precomputed data tables into a single struct.
-%
-%   Args:
-%       topology (struct): Full network topology.
-%       topology_csac (struct array): Topology entries for houses in this CSAC.
-%       houses_csac (logical): Mask of houses belonging to this CSAC.
-%       meter_data (table): Full meter data table for the network.
-%       num_timestamps (int): Total number of timesteps for logger allocation.
-%       Q_base (2x2 matrix): Base process noise covariance.
-%       R_base (scalar): Base measurement noise variance.
-%       P_base (2x2 matrix): Initial state covariance.
-%       innovation_gate_initial (scalar): Initial innovation gate value.
-%
-%   Returns:
-%       csac (struct): Complete CSAC state struct with fields:
-%           .num_houses (int): Number of houses in the CSAC.
-%           .house_ids (1xN int): Sorted house IDs.
-%           .U_csac (scalar): CSAC pipe U-value from topology.
-%           .ground_truth (table): True offset and U-value per house.
-%           .meter_data (table): Meter data joined with geometry, for this CSAC.
-%           .ukf_states (cell): UKF state structs per house.
-%           .ukf_states_snapshot (cell): Snapshot of UKF states per house.
-%           .ukf_innovation_gate (1xN double): Innovation gate per house.
-%           .ukf_offsets (Nx1 double): Current offset estimates (NaN until first update).
-%           .last_valid_T_main_C (Nx1 double): Last valid T_main per house.
-%           .last_update_timestamp (Nx1 datetime): Last update time per house.
-%           .gate_reject_count (int): Total rejected updates.
-%           .gate_accept_count (int): Total accepted updates.
-%           .season_state (struct): Heating season gate state.
-%           .logger (struct): UKF logger struct.
 
     num_houses = sum(houses_csac);
     house_ids = sort([topology.houses(houses_csac).id]);
 
-    %% Ground truth table
+    %% Read simulation config
+    sim_cfg = config.project.simulation;
+
+    %% Generate true offsets (reproducible per network + house)
     true_offset = zeros(num_houses, 1);
+    for i = 1:num_houses
+        rng(network_id * 10000 + house_ids(i), 'twister');
+        raw_offset = sim_cfg.offset_mean + sim_cfg.offset_std * randn();
+        true_offset(i) = max(sim_cfg.offset_min, min(sim_cfg.offset_max, raw_offset));
+    end
+
+    %% Ground truth table
     ground_truth = table(house_ids', true_offset, ...
         [topology_csac.service_pipe_insulation_W_m_K]', ...
         'VariableNames', {'house_id', 'true_offset', 'true_U'});
@@ -51,18 +30,31 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, mete
     meter_data_csac = meter_data(ismember(meter_data.house_id, house_ids), :);
     meter_data_csac = join(meter_data_csac, csac_table, 'Keys', 'house_id');
 
-    %% Initialize UKF states
+    %% Apply true offsets to meter data
+    for i = 1:num_houses
+        mask = meter_data_csac.house_id == house_ids(i);
+        meter_data_csac.T_supply_C(mask) = meter_data_csac.T_supply_C(mask) - true_offset(i);
+    end
+
+    fprintf('  Applied simulated offsets to %d houses: [%s] °C\n', ...
+        num_houses, strjoin(arrayfun(@(x) sprintf('%.2f', x), true_offset, 'UniformOutput', false), ', '));
+
+    %% Initialize UKF states at prior (reproducible per network + house)
     ukf_states = cell(1, num_houses);
     ukf_states_snapshot = cell(1, num_houses);
     ukf_innovation_gate = nan(1, num_houses);
 
     for i = 1:num_houses
-        x_init = [randn() * 0.3; 0.12 + randn() * 0.03];
+        rng(network_id * 10000 + house_ids(i) + 1e6, 'twister');
+        x_init = [0; sim_cfg.U_init_mean + sim_cfg.U_init_std * randn()];
         ukf_states{i} = initialize_kalman_filter(x_init, Q_base, R_base, P_base);
         ukf_innovation_gate(i) = innovation_gate_initial;
         ukf_states_snapshot{i}.x = ukf_states{i}.x;
         ukf_states_snapshot{i}.P = ukf_states{i}.P;
     end
+
+    %% Restore RNG
+    rng('shuffle');
 
     %% Initialize logger and log initial states
     logger = initialize_logger(num_houses, num_timestamps, house_ids);
@@ -85,6 +77,7 @@ function csac = initialize_csac_state(topology, topology_csac, houses_csac, mete
     csac.last_update_timestamp = NaT(num_houses, 1);
     csac.gate_reject_count = 0;
     csac.gate_accept_count = 0;
+    csac.consecutive_rejection_counters = zeros(num_houses, 1);
     csac.season_state = initialize_season_state();
     csac.logger = logger;
 end

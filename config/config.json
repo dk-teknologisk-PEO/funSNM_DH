@@ -75,6 +75,20 @@
       "gamma": 0.1,
       "deadzone": 0.05
     },
+    "simulation": {
+      "offset_mean": 0.0,
+      "offset_std": 0.3,
+      "offset_min": -2.0,
+      "offset_max": 2.0,
+      "U_init_mean": 0.12,
+      "U_init_std": 0.01
+    },
+    "consecutive_rejection": {
+      "max_consecutive": 10,
+      "P_inflation_factor": 5.0,
+      "P_max_offset": 2.0,
+      "P_max_U": 0.1
+    },
     "debug": {
       "disable_stability_gate": true,
       "disable_mean_centering": true,

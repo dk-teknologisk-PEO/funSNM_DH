@@ -1,26 +1,8 @@
 function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
     daily_T_air_max_table, P_base, config, csac_id)
 %PROCESS_CSAC_TIMESTEP Processes a single timestep for one CSAC.
-%
-%   Handles heating season gate, main pipe temperature estimation,
-%   per-house UKF updates, snapshot management, and master offset.
-%
-%   Args:
-%       cs (struct): CSAC state struct from initialize_csac_state.
-%       t (int): Current timestep index.
-%       time (datetime): Current timestamp.
-%       current_data (table): Meter data for this CSAC at this timestep,
-%           sorted by house_id with geometry columns joined.
-%       current_T_soil_C (scalar): Current soil temperature in °C.
-%       daily_T_air_max_table (table): Precomputed daily T_air_max lookup.
-%       P_base (2x2 matrix): Initial covariance (for snapshot restore).
-%       config (struct): Project configuration.
-%       csac_id (int): CSAC identifier for log messages.
-%
-%   Returns:
-%       cs (struct): Updated CSAC state struct.
 
-    %% Unpack gating config (read once per call for clarity)
+    %% Unpack gating config
     absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
     delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
     alpha_min = config.project.cutoff.alpha_min;
@@ -115,6 +97,12 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
             elseif update_result.rejected
                 cs.gate_reject_count = cs.gate_reject_count + 1;
             end
+
+            % --- Consecutive rejection check ---
+            [cs.ukf_states{i}, cs.consecutive_rejection_counters(i)] = ...
+                check_consecutive_rejections(cs.ukf_states{i}, ...
+                cs.consecutive_rejection_counters(i), ...
+                update_result.rejected, update_result.accepted, config);
         end
 
         % --- Logging ---
