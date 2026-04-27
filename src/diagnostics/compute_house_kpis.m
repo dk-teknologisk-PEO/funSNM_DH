@@ -1,17 +1,19 @@
 function kpis = compute_house_kpis(state_estimates, covariance_posterior, timestamps, ...
     true_offset_traj, true_U_traj, kpi_config)
 %COMPUTE_HOUSE_KPIS Computes performance KPIs for a single house.
-%
-%   Args:
-%       state_estimates (2xT matrix): Estimated [offset; U] at each timestep.
-%       covariance_posterior (2xT matrix): Posterior variances [P_offset; P_U].
-%       timestamps (1xT datetime): Timestamp for each step.
-%       true_offset_traj (1xT double): True offset at each timestep.
-%       true_U_traj (1xT double): True U-value at each timestep.
-%       kpi_config (struct): KPI parameters.
-%
-%   Returns:
-%       kpis (struct): Computed KPIs.
+
+    % --- Force all 1D inputs to row vectors ---
+    timestamps = timestamps(:)';          % 1 x T
+    true_offset_traj = true_offset_traj(:)';
+    true_U_traj = true_U_traj(:)';
+
+    % State and covariance should be 2 x T, but enforce if needed
+    if size(state_estimates,1) ~= 2 && size(state_estimates,2) == 2
+        state_estimates = state_estimates';
+    end
+    if size(covariance_posterior,1) ~= 2 && size(covariance_posterior,2) == 2
+        covariance_posterior = covariance_posterior';
+    end
 
     T = length(timestamps);
 
@@ -22,7 +24,6 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
     std_U = sqrt(covariance_posterior(2, :));
 
     %% Define valid timesteps
-    % Use all logged timesteps. The logger already carries values forward.
     is_valid = ~isnat(timestamps);
     valid_idx = find(is_valid);
 
@@ -38,7 +39,7 @@ function kpis = compute_house_kpis(state_estimates, covariance_posterior, timest
         idx_prev = valid_idx(k-1);
         dt_hours(idx) = hours(timestamps(idx) - timestamps(idx_prev));
     end
-    dt_hours(valid_idx(1)) = 1; % nominal weight for first valid step
+    dt_hours(valid_idx(1)) = 1;
 
     % Cap large gaps so off-season periods do not dominate
     max_dt_hours = 48;
@@ -163,8 +164,13 @@ function val = compute_post_conv_weighted_mae(err, is_valid, dt_hours, conv_idx,
         return;
     end
 
+    err = err(:)';
+    is_valid = is_valid(:)';
+    dt_hours = dt_hours(:)';
+
     idx_vec = 1:T;
     post_conv = is_valid & (idx_vec >= conv_idx);
+
     total_time = sum(dt_hours(post_conv));
 
     if total_time <= 0
@@ -181,6 +187,9 @@ function val = compute_post_conv_std(err, is_valid, conv_idx, T)
         val = NaN;
         return;
     end
+
+    err = err(:)';
+    is_valid = is_valid(:)';
 
     idx_vec = 1:T;
     post_conv = is_valid & (idx_vec >= conv_idx);
@@ -200,6 +209,9 @@ function val = compute_post_conv_max(err, is_valid, conv_idx, T)
         return;
     end
 
+    err = err(:)';
+    is_valid = is_valid(:)';
+
     idx_vec = 1:T;
     post_conv = is_valid & (idx_vec >= conv_idx);
 
@@ -215,6 +227,11 @@ function eos = compute_end_of_season_errors(state_est, cov_post, err_offset, err
     is_valid, timestamps)
 %COMPUTE_END_OF_SEASON_ERRORS Records state, uncertainty and error at the
 %   last valid timestep before each gap of >30 days, plus final timestep.
+
+    timestamps = timestamps(:)';
+    is_valid = is_valid(:)';
+    err_offset = err_offset(:)';
+    err_U = err_U(:)';
 
     valid_idx = find(is_valid);
     if numel(valid_idx) < 2
