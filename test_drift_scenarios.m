@@ -1,6 +1,5 @@
 % test_drift_scenarios.m
 % Runs drift scenarios on a single house and compares KPI outputs.
-% Place in project root and run.
 
 clear all; close all; clc;
 
@@ -9,7 +8,6 @@ addpath('src/kalman_filter', 'src/network_model', 'src/data_handling', ...
 
 config = jsondecode(fileread("config.json"));
 
-% Shared setup
 R_base = config.project.initialization.ukf.measurement_noise^2;
 Q_base = diag([(config.project.initialization.ukf.process_noise_offset)^2, ...
                (config.project.initialization.ukf.process_noise_U)^2]);
@@ -27,66 +25,39 @@ kpi_config.convergence_hold_days = 14;
 [T_soil_C, T_air_C] = soilTemp(config);
 daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
 
-%% Define which house drifts (index within the CSAC, 1-based)
+%% Define which house drifts
 drift_house_index = 5;
 
-%% Define scenarios — realistic drift rates and step sizes
+%% Define scenarios
 scenarios = struct();
 
 scenarios(1).name = 'no_drift';
-scenarios(1).drift_config.type = 'none';
-scenarios(1).drift_config.house_index = drift_house_index;
-scenarios(1).drift_config.offset_drift_per_year = 0;
-scenarios(1).drift_config.step_time = NaT;
-scenarios(1).drift_config.offset_step = 0;
+scenarios(1).drift_config = struct('type', 'none', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0, 'step_time', NaT, 'offset_step', 0);
 
-% Slow drift — barely detectable, realistic ageing
 scenarios(2).name = 'linear_0.05C_yr';
-scenarios(2).drift_config.type = 'linear';
-scenarios(2).drift_config.house_index = drift_house_index;
-scenarios(2).drift_config.offset_drift_per_year = 0.05;
-scenarios(2).drift_config.step_time = NaT;
-scenarios(2).drift_config.offset_step = 0;
+scenarios(2).drift_config = struct('type', 'linear', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0.05, 'step_time', NaT, 'offset_step', 0);
 
-% Moderate drift — detectable over a few seasons
 scenarios(3).name = 'linear_0.1C_yr';
-scenarios(3).drift_config.type = 'linear';
-scenarios(3).drift_config.house_index = drift_house_index;
-scenarios(3).drift_config.offset_drift_per_year = 0.1;
-scenarios(3).drift_config.step_time = NaT;
-scenarios(3).drift_config.offset_step = 0;
+scenarios(3).drift_config = struct('type', 'linear', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0.1, 'step_time', NaT, 'offset_step', 0);
 
-% Faster drift — should be clearly visible
 scenarios(4).name = 'linear_0.3C_yr';
-scenarios(4).drift_config.type = 'linear';
-scenarios(4).drift_config.house_index = drift_house_index;
-scenarios(4).drift_config.offset_drift_per_year = 0.3;
-scenarios(4).drift_config.step_time = NaT;
-scenarios(4).drift_config.offset_step = 0;
+scenarios(4).drift_config = struct('type', 'linear', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0.3, 'step_time', NaT, 'offset_step', 0);
 
-% Small step — partial sensor degradation
 scenarios(5).name = 'step_0.3C';
-scenarios(5).drift_config.type = 'step';
-scenarios(5).drift_config.house_index = drift_house_index;
-scenarios(5).drift_config.offset_drift_per_year = 0;
-scenarios(5).drift_config.step_time = datetime(2019, 1, 15);
-scenarios(5).drift_config.offset_step = 0.3;
+scenarios(5).drift_config = struct('type', 'step', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0, 'step_time', datetime(2019, 1, 15), 'offset_step', 0.3);
 
-% Medium step — noticeable sensor issue
 scenarios(6).name = 'step_0.5C';
-scenarios(6).drift_config.type = 'step';
-scenarios(6).drift_config.house_index = drift_house_index;
-scenarios(6).drift_config.offset_drift_per_year = 0;
-scenarios(6).drift_config.step_time = datetime(2019, 1, 15);
-scenarios(6).drift_config.offset_step = 0.5;
+scenarios(6).drift_config = struct('type', 'step', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0, 'step_time', datetime(2019, 1, 15), 'offset_step', 0.5);
 
-% Large step — sensor replacement or failure
 scenarios(7).name = 'step_1.0C';
-scenarios(7).drift_config.type = 'step';
-scenarios(7).drift_config.house_index = drift_house_index;
-scenarios(7).drift_config.offset_drift_per_year = 0;
-scenarios(7).drift_config.step_time = datetime(2019, 1, 15);
-scenarios(7).drift_config.offset_step = 1.0;
+scenarios(7).drift_config = struct('type', 'step', 'house_index', drift_house_index, ...
+    'offset_drift_per_year', 0, 'step_time', datetime(2019, 1, 15), 'offset_step', 1.0);
 
 %% Run each scenario
 networks = config.project.datasets.datasets;
@@ -95,6 +66,7 @@ network_id = networks(1);
 timestamps = unique(meter_data.timestamp);
 csac_ids = [topology.cul_de_sacs.id];
 test_csac = csac_ids(1);
+test_csac_idx = find(csac_ids == test_csac);
 
 results = struct();
 
@@ -103,33 +75,35 @@ for s = 1:numel(scenarios)
     fprintf('SCENARIO %d/%d: %s\n', s, numel(scenarios), scenarios(s).name);
     fprintf('========================================\n');
 
-    houses_csac = ([topology.houses.cul_de_sac_id] == test_csac);
-    topology_csac = topology.houses(houses_csac);
+    % Initialize all CSACs (even though we only analyze one)
+    [all_cs, all_true_traj] = initialize_all_csacs(topology, meter_data, timestamps, ...
+        Q_base, R_base, P_base, innovation_gate_initial, config, network_id, ...
+        scenarios(s).drift_config);
 
-    cs = initialize_csac_state(topology, topology_csac, houses_csac, ...
-        meter_data, length(timestamps), Q_base, R_base, P_base, ...
-        innovation_gate_initial, config, network_id);
-
-    cs.meter_data = apply_offset_drift_to_data(...
-        cs.meter_data, cs.house_ids, scenarios(s).drift_config, timestamps);
-
-    true_traj = generate_true_trajectories(...
-        cs.ground_truth, timestamps, scenarios(s).drift_config);
-
+    % Run all timesteps across all CSACs
     for t = 1:length(timestamps)
         time = timestamps(t);
-        current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
-        current_data = sortrows(current_data, 'house_id');
         current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
-
-        if isempty(current_data) || isempty(current_T_soil_C)
+        if isempty(current_T_soil_C)
             continue
         end
 
-        cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
-            daily_T_air_max_table, P_base, config, test_csac);
+        for c = 1:numel(csac_ids)
+            cs = all_cs{c};
+            current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
+            current_data = sortrows(current_data, 'house_id');
+            if isempty(current_data)
+                continue
+            end
+            cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
+                daily_T_air_max_table, P_base, config, csac_ids(c));
+            all_cs{c} = cs;
+        end
     end
 
+    % Compute KPIs for the test CSAC
+    cs = all_cs{test_csac_idx};
+    true_traj = all_true_traj{test_csac_idx};
     output_folder = fullfile('results', 'drift_test', scenarios(s).name);
     kpi_summary = compute_and_save_network_kpis(cs, test_csac, output_folder, ...
         kpi_config, true_traj);
@@ -160,7 +134,7 @@ for s = 1:numel(results)
 end
 fprintf('========================================\n');
 
-%% Print comparison — non-drifting houses (should be unaffected)
+%% Print comparison — non-drifting houses
 other_idx = setdiff(1:size(results(1).kpi_summary, 1), di);
 fprintf('\nNON-DRIFTING HOUSES (mean across %d houses)\n', numel(other_idx));
 fprintf('%-18s | %10s | %10s | %10s\n', 'Scenario', 'TW-MAE', 'Final|Err|', 'Stability');
@@ -180,16 +154,14 @@ fig = figure('Visible', 'on', 'Position', [100, 100, 1400, 700]);
 colors = lines(numel(scenarios));
 
 for s = 1:numel(scenarios)
-    cs = results(s).cs;
-    est_offset = squeeze(cs.logger.state_estimates(1, di, :));
+    cs_plot = results(s).cs;
+    est_offset = squeeze(cs_plot.logger.state_estimates(1, di, :));
     true_offset = results(s).true_traj{di}.offset;
-    est_std = squeeze(sqrt(cs.logger.covariance_posterior(1, di, :)));
 
-    valid = ~isnat(cs.logger.timestamps);
-    t_plot = cs.logger.timestamps(valid);
+    valid = ~isnat(cs_plot.logger.timestamps);
+    t_plot = cs_plot.logger.timestamps(valid);
     est_plot = est_offset(valid);
     true_plot = true_offset(valid);
-    std_plot = est_std(valid);
 
     subplot(3, 1, 1);
     hold on;
@@ -210,7 +182,7 @@ end
 
 subplot(3, 1, 1);
 ylabel('Estimated Offset [°C]');
-title(sprintf('House %d (index %d) — Estimated Offset', cs.house_ids(di), di));
+title(sprintf('House %d (index %d) — Estimated Offset', cs_plot.house_ids(di), di));
 legend('Location', 'best', 'FontSize', 7);
 grid on;
 
