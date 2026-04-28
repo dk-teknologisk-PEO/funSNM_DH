@@ -53,14 +53,16 @@
     },
     "csac_U_estimation": {
       "enabled": true,
-      "update_interval_timesteps": 24,
-      "gain": 0.001,
-      "max_adjustment_per_step": 0.005,
+      "update_interval_timesteps": 6,
+      "gain": 0.01,
+      "max_adjustment_per_step": 0.002,
       "U_min": 0.05,
       "U_max": 0.50,
       "min_correlation": 0.3,
-      "warmup_timesteps": 100
-    }
+      "warmup_timesteps": 50,
+      "P_offset_convergence_threshold": 0.5,
+      "P_U_convergence_threshold": 0.05
+    },
     "heating_season": {
       "nis_threshold": 3.0,
       "window_days": 5,
@@ -91,7 +93,7 @@
       "offset_min": -2.0,
       "offset_max": 2.0,
       "U_init_mean": 0.12,
-      "U_init_std": 0.01
+      "U_init_std": 0.01,
       "U_csac_init_mean": 0.20,
       "U_csac_init_std": 0.05
     },

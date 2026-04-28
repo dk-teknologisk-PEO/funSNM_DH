@@ -12,6 +12,12 @@ function all_kpi_summaries = post_process_all_csacs(all_cs, all_true_traj, csac_
         % Print statistics
         print_csac_summary(csac_id, cs.gate_accept_count, cs.gate_reject_count, cs.season_state);
 
+        % Print U_csac estimation result
+        if isfield(cs, 'U_csac_true')
+            fprintf('  CSAC %d pipe U-value: estimated=%.4f, true=%.4f, error=%.4f W/m/K\n', ...
+                csac_id, cs.U_csac, cs.U_csac_true, cs.U_csac - cs.U_csac_true);
+        end
+
         % Compute and save KPIs
         kpi_summary = compute_and_save_network_kpis(cs, csac_id, output_folder, ...
             kpi_config, true_traj, network_id);
@@ -19,6 +25,10 @@ function all_kpi_summaries = post_process_all_csacs(all_cs, all_true_traj, csac_
 
         % Plot diagnostics
         plot_diagnostics(cs.logger, cs.ground_truth, csac_id, network_id, output_folder);
+
+        % Plot CSAC U-value diagnostics
+        plot_csac_U_diagnostics(cs, csac_id, network_id, output_folder);
+
         save_logger_to_csv(cs.logger, output_folder, sprintf('ukf_network_%d_csac_%d', network_id, csac_id));
         save_diagnostic_summary(cs.logger, cs.ground_truth, csac_id, output_folder, 'ukf');
         save_diagnostic_summary_detailed(cs.logger, cs.ground_truth, csac_id, output_folder, 'ukf');

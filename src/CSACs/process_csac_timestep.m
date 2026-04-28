@@ -127,29 +127,4 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     cs.ukf_states = apply_master_offset(cs.ukf_states, ukf_master_offset, ...
         num_active_houses, config);
 
-    %% ================================================================
-    %% CSAC PIPE U-VALUE ESTIMATION
-    %% ================================================================
-    if isfield(config.project, 'csac_U_estimation') && config.project.csac_U_estimation.enabled
-        % Only update every N timesteps after warmup
-        update_interval = config.project.csac_U_estimation.update_interval_timesteps;
-        warmup = config.project.csac_U_estimation.warmup_timesteps;
-
-        if ~isfield(cs, 'csac_U_update_counter')
-            cs.csac_U_update_counter = 0;
-        end
-        cs.csac_U_update_counter = cs.csac_U_update_counter + 1;
-
-        if cs.csac_U_update_counter >= warmup && mod(cs.csac_U_update_counter, update_interval) == 0
-            [U_csac_new, U_diag] = estimate_csac_U(cs, config);
-
-            if abs(U_diag.adjustment) > 0
-                fprintf('  CSAC %d U-value: %.4f → %.4f (slope=%.4f °C/m, corr=%.2f, adj=%.5f)\n', ...
-                    csac_id, cs.U_csac, U_csac_new, U_diag.slope, U_diag.correlation, U_diag.adjustment);
-            end
-
-            cs.U_csac = U_csac_new;
-        end
-        cs.csac_U_history(end+1) = cs.U_csac;
-    end
 end
