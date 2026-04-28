@@ -48,4 +48,28 @@ function config = make_test_config()
     config.project.consecutive_rejection.P_inflation_factor = 5.0;
     config.project.consecutive_rejection.P_max_offset = 2.0;
     config.project.consecutive_rejection.P_max_U = 0.1;
+
+    config.project.csac_U_estimation.enabled = true;
+    config.project.csac_U_estimation.update_interval_timesteps = 6;
+    config.project.csac_U_estimation.gain = 0.01;
+    config.project.csac_U_estimation.max_adjustment_per_step = 0.002;
+    config.project.csac_U_estimation.U_min = 0.05;
+    config.project.csac_U_estimation.U_max = 0.50;
+    config.project.csac_U_estimation.min_correlation = 0.3;
+    config.project.csac_U_estimation.warmup_timesteps = 50;
+    config.project.csac_U_estimation.P_offset_convergence_threshold = 0.5;
+    config.project.csac_U_estimation.P_U_convergence_threshold = 0.05;
+
+    config.project.main_pipe_U_estimation.enabled = true;
+    config.project.main_pipe_U_estimation.update_interval_timesteps = 6;
+    config.project.main_pipe_U_estimation.gain = 0.01;
+    config.project.main_pipe_U_estimation.max_adjustment_per_step = 0.002;
+    config.project.main_pipe_U_estimation.U_min = 0.05;
+    config.project.main_pipe_U_estimation.U_max = 0.50;
+    config.project.main_pipe_U_estimation.min_correlation = 0.3;
+    config.project.main_pipe_U_estimation.warmup_timesteps = 50;
+    config.project.main_pipe_U_estimation.P_offset_convergence_threshold = 0.5;
+
+    config.project.main_pipe_coupling.enabled = true;
+    config.project.main_pipe_coupling.warmup_timesteps = 100;
 end

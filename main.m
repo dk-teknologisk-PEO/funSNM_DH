@@ -52,7 +52,6 @@ networks = config.project.datasets.datasets(:)';
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'), '/ukf');
 w = waitbar(0.0, "Starting analysis");
 
-% Collect all KPI summaries
 all_kpi_summaries = table();
 
 %% ================================================================
@@ -70,20 +69,34 @@ for network_id = networks
         Q_base, R_base, P_base, innovation_gate_initial, config, network_id, drift_config);
 
     %% Initialize shared U_csac
-    % Use the value from the first CSAC (they all start the same)
     shared_U_csac = all_cs{1}.U_csac;
     U_csac_true = all_cs{1}.U_csac_true;
-    fprintf('  Shared U_csac: init=%.4f, true=%.4f W/m/K\n', shared_U_csac, U_csac_true);
-
-    % Synchronize all CSACs to shared value
     for c = 1:num_csacs
         all_cs{c}.U_csac = shared_U_csac;
     end
-
-    % U_csac estimation state
     U_csac_update_counter = 0;
     U_csac_history = shared_U_csac;
     U_csac_cfg = config.project.csac_U_estimation;
+
+    %% Initialize main pipe U-value
+    sim_cfg = config.project.simulation;
+    U_main_true = topology.pipe_parameters.main_pipe.insulation_W_m_K;
+    rng(network_id * 10000 + 3e6, 'twister');
+    if isfield(sim_cfg, 'U_main_init_mean')
+        shared_U_main = sim_cfg.U_main_init_mean + sim_cfg.U_main_init_std * randn();
+    else
+        shared_U_main = 0.20 + 0.05 * randn();
+    end
+    shared_U_main = max(0.05, min(0.50, shared_U_main));
+    rng('shuffle');
+    U_main_update_counter = 0;
+    U_main_history = shared_U_main;
+    U_main_cfg = config.project.main_pipe_U_estimation;
+    main_coupling_cfg = config.project.main_pipe_coupling;
+    main_coupling_counter = 0;
+
+    fprintf('  Shared U_csac: init=%.4f, true=%.4f W/m/K\n', shared_U_csac, U_csac_true);
+    fprintf('  Shared U_main: init=%.4f, true=%.4f W/m/K\n', shared_U_main, U_main_true);
 
     %% Timestep loop
     fprintf('Starting timestep loop: %d timesteps, %d CSACs\n', length(timestamps), num_csacs);
@@ -91,8 +104,8 @@ for network_id = networks
     for t = 1:length(timestamps)
         if mod(t, 50) == 0
             waitbar(t / length(timestamps), w, ...
-                sprintf("Timestep %d/%d, network %d, U_csac=%.4f", ...
-                t, length(timestamps), network_id, shared_U_csac));
+                sprintf("t=%d/%d, net=%d, Uc=%.4f, Um=%.4f", ...
+                t, length(timestamps), network_id, shared_U_csac, shared_U_main));
         end
 
         time = timestamps(t);
@@ -101,15 +114,22 @@ for network_id = networks
             continue
         end
 
-        % Process each CSAC
+        %% ============================================================
+        %% PASS 1: Process all CSACs independently
+        %% ============================================================
         any_csac_active = false;
         for c = 1:num_csacs
             cs = all_cs{c};
+
+            % Clear any previous main-pipe T_inlet so first pass is independent
+            cs.T_inlet_from_main = NaN;
+
             current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
             current_data = sortrows(current_data, 'house_id');
             if isempty(current_data)
                 continue
             end
+
             cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
                 daily_T_air_max_table, P_base, config, csac_ids(c));
             all_cs{c} = cs;
@@ -119,54 +139,128 @@ for network_id = networks
             end
         end
 
-        %% Shared U_csac estimation (only during active season)
-        if any_csac_active && U_csac_cfg.enabled
-            U_csac_update_counter = U_csac_update_counter + 1;
+        if ~any_csac_active
+            continue
+        end
 
+        %% ============================================================
+        %% MAIN PIPE COUPLING: Fit main pipe temperature profile
+        %% ============================================================
+        main_coupling_counter = main_coupling_counter + 1;
+        main_pipe_valid = false;
+
+        if main_coupling_cfg.enabled && main_coupling_counter >= main_coupling_cfg.warmup_timesteps
+            [T_csac_inlet_C, main_diag] = estimate_main_pipe_temp(...
+                all_cs, csac_ids, topology, current_T_soil_C, shared_U_main, config);
+
+            if main_diag.valid
+                main_pipe_valid = true;
+            end
+        end
+
+        %% ============================================================
+        %% PASS 2: Re-process CSACs with main-pipe-constrained T_inlet
+        %% ============================================================
+        if main_pipe_valid
+            for c = 1:num_csacs
+                if isfinite(T_csac_inlet_C(c))
+                    cs = all_cs{c};
+
+                    % Set the main-pipe-provided T_inlet
+                    cs.T_inlet_from_main = T_csac_inlet_C(c);
+
+                    current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
+                    current_data = sortrows(current_data, 'house_id');
+                    if isempty(current_data)
+                        continue
+                    end
+
+                    cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
+                        daily_T_air_max_table, P_base, config, csac_ids(c));
+                    all_cs{c} = cs;
+                end
+            end
+        end
+
+        %% ============================================================
+        %% U_csac ESTIMATION (periodically)
+        %% ============================================================
+        if U_csac_cfg.enabled
+            U_csac_update_counter = U_csac_update_counter + 1;
             if U_csac_update_counter >= U_csac_cfg.warmup_timesteps && ...
                mod(U_csac_update_counter, U_csac_cfg.update_interval_timesteps) == 0
 
-                [U_csac_new, U_diag] = update_shared_U_csac(all_cs, shared_U_csac, config);
-
-                if U_diag.adjusted
-                    fprintf('  U_csac: %.4f → %.4f (grad_off=%.4f, grad_U=%.5f, corr=%.2f, houses=%d)\n', ...
-                        shared_U_csac, U_csac_new, U_diag.avg_gradient_offset, ...
-                        U_diag.avg_gradient_U, U_diag.avg_corr, U_diag.total_valid_houses);
+                [U_csac_new, U_csac_diag] = update_shared_U_csac(all_cs, shared_U_csac, config);
+                if U_csac_diag.adjusted
+                    fprintf('  U_csac: %.4f -> %.4f (grad=%.4f, corr=%.2f, houses=%d)\n', ...
+                        shared_U_csac, U_csac_new, U_csac_diag.avg_gradient_offset, ...
+                        U_csac_diag.avg_corr, U_csac_diag.total_valid_houses);
                 end
-
                 shared_U_csac = U_csac_new;
-
-                % Synchronize to all CSACs
                 for c = 1:num_csacs
                     all_cs{c}.U_csac = shared_U_csac;
                 end
-
                 U_csac_history(end+1) = shared_U_csac;
+            end
+        end
+
+        %% ============================================================
+        %% U_main ESTIMATION (periodically)
+        %% ============================================================
+        if U_main_cfg.enabled
+            U_main_update_counter = U_main_update_counter + 1;
+            if U_main_update_counter >= U_main_cfg.warmup_timesteps && ...
+               mod(U_main_update_counter, U_main_cfg.update_interval_timesteps) == 0
+
+                [U_main_new, U_main_diag] = estimate_main_pipe_U(...
+                    all_cs, csac_ids, topology, shared_U_main, config);
+                if U_main_diag.adjusted
+                    fprintf('  U_main: %.4f -> %.4f (grad=%.4f, corr=%.2f)\n', ...
+                        shared_U_main, U_main_new, U_main_diag.total_gradient, ...
+                        U_main_diag.correlation);
+                end
+                shared_U_main = U_main_new;
+                U_main_history(end+1) = shared_U_main;
             end
         end
     end
 
-    %% Plot U_csac convergence
-    fig_U = figure('Visible', 'off', 'Position', [100, 100, 800, 400]);
-    plot(1:numel(U_csac_history), U_csac_history, 'b-', 'LineWidth', 2, ...
-        'DisplayName', 'Estimated');
-    yline(U_csac_true, 'r--', 'LineWidth', 2, 'DisplayName', 'True');
-    xlabel('Update step');
-    ylabel('U_{csac} [W/m/K]');
-    title(sprintf('Network %d — U_{csac} Convergence (init=%.4f, final=%.4f, true=%.4f)', ...
-        network_id, U_csac_history(1), U_csac_history(end), U_csac_true));
-    legend('Location', 'best');
-    grid on;
+    %% ============================================================
+    %% CONVERGENCE PLOTS
+    %% ============================================================
     if ~exist(output_folder_ukf, 'dir'), mkdir(output_folder_ukf); end
-    saveas(fig_U, fullfile(output_folder_ukf, sprintf('U_csac_convergence_network_%d.png', network_id)));
-    close(fig_U);
 
-    %% Post-processing
+    % U_csac convergence
+    fig_Uc = figure('Visible', 'off', 'Position', [100, 100, 800, 400]);
+    plot(1:numel(U_csac_history), U_csac_history, 'b-', 'LineWidth', 2, 'DisplayName', 'Estimated');
+    yline(U_csac_true, 'r--', 'LineWidth', 2, 'DisplayName', 'True');
+    xlabel('Update step'); ylabel('U_{csac} [W/m/K]');
+    title(sprintf('Network %d — U_{csac} (init=%.4f, final=%.4f, true=%.4f)', ...
+        network_id, U_csac_history(1), U_csac_history(end), U_csac_true));
+    legend('Location', 'best'); grid on;
+    saveas(fig_Uc, fullfile(output_folder_ukf, sprintf('U_csac_convergence_network_%d.png', network_id)));
+    close(fig_Uc);
+
+    % U_main convergence
+    fig_Um = figure('Visible', 'off', 'Position', [100, 100, 800, 400]);
+    plot(1:numel(U_main_history), U_main_history, 'b-', 'LineWidth', 2, 'DisplayName', 'Estimated');
+    yline(U_main_true, 'r--', 'LineWidth', 2, 'DisplayName', 'True');
+    xlabel('Update step'); ylabel('U_{main} [W/m/K]');
+    title(sprintf('Network %d — U_{main} (init=%.4f, final=%.4f, true=%.4f)', ...
+        network_id, U_main_history(1), U_main_history(end), U_main_true));
+    legend('Location', 'best'); grid on;
+    saveas(fig_Um, fullfile(output_folder_ukf, sprintf('U_main_convergence_network_%d.png', network_id)));
+    close(fig_Um);
+
+    %% ============================================================
+    %% POST-PROCESSING
+    %% ============================================================
     fprintf('\n=== Post-processing network %d ===\n', network_id);
     fprintf('  Final U_csac: %.4f (true=%.4f, error=%.4f)\n', ...
         shared_U_csac, U_csac_true, shared_U_csac - U_csac_true);
+    fprintf('  Final U_main: %.4f (true=%.4f, error=%.4f)\n', ...
+        shared_U_main, U_main_true, shared_U_main - U_main_true);
 
-    % Plot CSAC U diagnostics
     plot_csac_U_diagnostics(all_cs, csac_ids, shared_U_csac, network_id, output_folder_ukf);
 
     network_kpis = post_process_all_csacs(all_cs, all_true_traj, csac_ids, ...
@@ -176,9 +270,7 @@ end
 
 %% Save aggregate KPI summary
 if ~isempty(all_kpi_summaries)
-    if ~exist(output_folder_ukf, 'dir')
-        mkdir(output_folder_ukf);
-    end
+    if ~exist(output_folder_ukf, 'dir'), mkdir(output_folder_ukf); end
     writetable(all_kpi_summaries, fullfile(output_folder_ukf, 'kpi_summary_all.csv'));
     fprintf('\nAggregate KPI summary saved: %d houses across %d CSACs\n', ...
         height(all_kpi_summaries), numel(unique(all_kpi_summaries.csac_id)));
