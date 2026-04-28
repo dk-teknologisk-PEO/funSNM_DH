@@ -114,22 +114,17 @@ for network_id = networks
             continue
         end
 
-        %% ============================================================
-        %% PASS 1: Process all CSACs independently
+%% ============================================================
+        %% PROCESS ALL CSACs (single pass)
         %% ============================================================
         any_csac_active = false;
         for c = 1:num_csacs
             cs = all_cs{c};
-
-            % Clear any previous main-pipe T_inlet so first pass is independent
-            cs.T_inlet_from_main = NaN;
-
             current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
             current_data = sortrows(current_data, 'house_id');
             if isempty(current_data)
                 continue
             end
-
             cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
                 daily_T_air_max_table, P_base, config, csac_ids(c));
             all_cs{c} = cs;
@@ -144,44 +139,49 @@ for network_id = networks
         end
 
         %% ============================================================
-        %% MAIN PIPE COUPLING: Fit main pipe temperature profile
+        %% MAIN PIPE COUPLING: Fit and blend for next timestep
         %% ============================================================
         main_coupling_counter = main_coupling_counter + 1;
-        main_pipe_valid = false;
 
         if main_coupling_cfg.enabled && main_coupling_counter >= main_coupling_cfg.warmup_timesteps
             [T_csac_inlet_C, main_diag] = estimate_main_pipe_temp(...
                 all_cs, csac_ids, topology, current_T_soil_C, shared_U_main, config);
 
             if main_diag.valid
-                main_pipe_valid = true;
-            end
-        end
+                % Compute blend alpha based on U_main stability
+                % Alpha grows from 0 to max as U_main stabilizes
+                if numel(U_main_history) >= 3
+                    recent_changes = abs(diff(U_main_history(max(1,end-9):end)));
+                    avg_change = mean(recent_changes);
+                    % If U_main is changing by less than 0.001 per step, it's stable
+                    stability = max(0, 1 - avg_change / 0.002);
+                    alpha_blend = min(main_coupling_cfg.max_blend_alpha, ...
+                        main_coupling_cfg.max_blend_alpha * stability);
+                else
+                    alpha_blend = 0;
+                end
 
-        %% ============================================================
-        %% PASS 2: Re-process CSACs with main-pipe-constrained T_inlet
-        %% ============================================================
-        if main_pipe_valid
-            for c = 1:num_csacs
-                if isfinite(T_csac_inlet_C(c))
-                    cs = all_cs{c};
+                % Provide blended T_inlet to each CSAC for next timestep
+                for c = 1:num_csacs
+                    if isfinite(T_csac_inlet_C(c)) && isfield(all_cs{c}, 'T_inlet_fitted') && ...
+                       isfinite(all_cs{c}.T_inlet_fitted)
 
-                    % Set the main-pipe-provided T_inlet
-                    cs.T_inlet_from_main = T_csac_inlet_C(c);
-
-                    current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
-                    current_data = sortrows(current_data, 'house_id');
-                    if isempty(current_data)
-                        continue
+                        T_blended = (1 - alpha_blend) * all_cs{c}.T_inlet_fitted + ...
+                                    alpha_blend * T_csac_inlet_C(c);
+                        all_cs{c}.T_inlet_from_main = T_blended;
+                    else
+                        all_cs{c}.T_inlet_from_main = NaN;
                     end
+                    all_cs{c}.main_pipe_blend_alpha = alpha_blend;
+                end
 
-                    cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
-                        daily_T_air_max_table, P_base, config, csac_ids(c));
-                    all_cs{c} = cs;
+                if mod(main_coupling_counter, 100) == 0
+                    fprintf('  Main pipe blend: alpha=%.3f, U_main=%.4f\n', ...
+                        alpha_blend, shared_U_main);
                 end
             end
         end
-
+        
         %% ============================================================
         %% U_csac ESTIMATION (periodically)
         %% ============================================================

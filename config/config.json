@@ -76,7 +76,8 @@
     },
     "main_pipe_coupling": {
       "enabled": true,
-      "warmup_timesteps": 100
+      "warmup_timesteps": 100,
+      "max_blend_alpha": 0.5
     },
     "heating_season": {
       "nis_threshold": 3.0,

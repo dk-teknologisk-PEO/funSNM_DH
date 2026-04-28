@@ -72,4 +72,5 @@ function config = make_test_config()
 
     config.project.main_pipe_coupling.enabled = true;
     config.project.main_pipe_coupling.warmup_timesteps = 100;
+    config.project.main_pipe_coupling.max_blend_alpha = 0.5;
 end
