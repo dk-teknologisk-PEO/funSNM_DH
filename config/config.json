@@ -12,7 +12,7 @@
     "datasets": {
       "num_datasets": 1,
       "fixed_datasets": true,
-      "datasets": [1, 2, 3]
+      "datasets": [1]
     },
     "paths": {
       "topology": "C:/Users/PEO/Documents/GitHub/DH simulation/network_topologies",

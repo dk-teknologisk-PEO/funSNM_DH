@@ -65,10 +65,10 @@ function [U_csac_new, diagnostics] = update_shared_U_csac(all_cs, U_csac_current
 
     %% Compute adjustment
     % Positive offset gradient → U_csac too high → decrease
-    raw_adjustment = -cfg.gain * avg_gradient_offset;
+    raw_adjustment = cfg.gain * avg_gradient_offset;
 
     % Boost if U_service slope confirms (opposite sign to offset slope)
-    if sign(avg_gradient_U) == -sign(avg_gradient_offset) && abs(avg_gradient_U) > 0.0001
+    if sign(avg_gradient_U) == sign(avg_gradient_offset) && abs(avg_gradient_U) > 0.0001
         raw_adjustment = raw_adjustment * 1.5;
     end
 

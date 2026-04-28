@@ -27,7 +27,7 @@ function all_kpi_summaries = post_process_all_csacs(all_cs, all_true_traj, csac_
         plot_diagnostics(cs.logger, cs.ground_truth, csac_id, network_id, output_folder);
 
         % Plot CSAC U-value diagnostics
-        plot_csac_U_diagnostics(cs, csac_id, network_id, output_folder);
+        % plot_csac_U_diagnostics(cs, csac_id, network_id, output_folder);
 
         save_logger_to_csv(cs.logger, output_folder, sprintf('ukf_network_%d_csac_%d', network_id, csac_id));
         save_diagnostic_summary(cs.logger, cs.ground_truth, csac_id, output_folder, 'ukf');
