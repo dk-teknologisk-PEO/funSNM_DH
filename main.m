@@ -1,6 +1,5 @@
 % main.m
 % Main orchestration script for district heating UKF analysis.
-% Processes all CSACs simultaneously at each timestep.
 
 % === CLEANUP FROM PREVIOUS RUNS ===
 close all force
@@ -49,77 +48,127 @@ drift_config.offset_step = 0;
 [T_soil_C, T_air_C] = soilTemp(config);
 daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
 
-networks = config.project.datasets.datasets(:)';  % force row vector
+networks = config.project.datasets.datasets(:)';
 output_folder_ukf = fullfile('results', datestr(now, 'yyyy-mm-dd_HHMM'), '/ukf');
 w = waitbar(0.0, "Starting analysis");
 
-% Collect all KPI summaries across all networks
+% Collect all KPI summaries
 all_kpi_summaries = table();
 
 %% ================================================================
 %% MAIN PROCESSING LOOP
 %% ================================================================
 for network_id = networks
-    fprintf('DEBUG: network_id = %s, class = %s, size = %s\n', ...
-    mat2str(network_id), class(network_id), mat2str(size(network_id)));
     [meter_data, network_data, topology] = importData(config, network_id);
     timestamps = unique(meter_data.timestamp);
     csac_ids = [topology.cul_de_sacs.id];
     num_csacs = numel(csac_ids);
 
-    %% ============================================================
-    %% INITIALIZE ALL CSACS
-    %% ============================================================
+    %% Initialize all CSACs
     fprintf('\n=== Initializing network %d: %d CSACs ===\n', network_id, num_csacs);
     [all_cs, all_true_traj] = initialize_all_csacs(topology, meter_data, timestamps, ...
         Q_base, R_base, P_base, innovation_gate_initial, config, network_id, drift_config);
 
-    %% ============================================================
-    %% TIMESTEP LOOP (all CSACs processed per timestep)
-    %% ============================================================
+    %% Initialize shared U_csac
+    % Use the value from the first CSAC (they all start the same)
+    shared_U_csac = all_cs{1}.U_csac;
+    U_csac_true = all_cs{1}.U_csac_true;
+    fprintf('  Shared U_csac: init=%.4f, true=%.4f W/m/K\n', shared_U_csac, U_csac_true);
+
+    % Synchronize all CSACs to shared value
+    for c = 1:num_csacs
+        all_cs{c}.U_csac = shared_U_csac;
+    end
+
+    % U_csac estimation state
+    U_csac_update_counter = 0;
+    U_csac_history = shared_U_csac;
+    U_csac_cfg = config.project.csac_U_estimation;
+
+    %% Timestep loop
     fprintf('Starting timestep loop: %d timesteps, %d CSACs\n', length(timestamps), num_csacs);
 
     for t = 1:length(timestamps)
         if mod(t, 50) == 0
             waitbar(t / length(timestamps), w, ...
-                sprintf("Timestep %d/%d, network %d (%d CSACs)", ...
-                t, length(timestamps), network_id, num_csacs));
+                sprintf("Timestep %d/%d, network %d, U_csac=%.4f", ...
+                t, length(timestamps), network_id, shared_U_csac));
         end
 
         time = timestamps(t);
-
-        % Look up weather data once per timestep (shared across all CSACs)
         current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
         if isempty(current_T_soil_C)
             continue
         end
 
-        % Process each CSAC at this timestep
+        % Process each CSAC
+        any_csac_active = false;
         for c = 1:num_csacs
-            csac_id = csac_ids(c);
             cs = all_cs{c};
-
-            % Extract this CSAC's data for this timestep
             current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
             current_data = sortrows(current_data, 'house_id');
-
             if isempty(current_data)
                 continue
             end
-
-            % Process one timestep for this CSAC
             cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
-                daily_T_air_max_table, P_base, config, csac_id);
-
-            % Store updated state back
+                daily_T_air_max_table, P_base, config, csac_ids(c));
             all_cs{c} = cs;
+
+            if cs.season_state.active
+                any_csac_active = true;
+            end
+        end
+
+        %% Shared U_csac estimation (only during active season)
+        if any_csac_active && U_csac_cfg.enabled
+            U_csac_update_counter = U_csac_update_counter + 1;
+
+            if U_csac_update_counter >= U_csac_cfg.warmup_timesteps && ...
+               mod(U_csac_update_counter, U_csac_cfg.update_interval_timesteps) == 0
+
+                [U_csac_new, U_diag] = update_shared_U_csac(all_cs, shared_U_csac, config);
+
+                if U_diag.adjusted
+                    fprintf('  U_csac: %.4f → %.4f (grad_off=%.4f, grad_U=%.5f, corr=%.2f, houses=%d)\n', ...
+                        shared_U_csac, U_csac_new, U_diag.avg_gradient_offset, ...
+                        U_diag.avg_gradient_U, U_diag.avg_corr, U_diag.total_valid_houses);
+                end
+
+                shared_U_csac = U_csac_new;
+
+                % Synchronize to all CSACs
+                for c = 1:num_csacs
+                    all_cs{c}.U_csac = shared_U_csac;
+                end
+
+                U_csac_history(end+1) = shared_U_csac;
+            end
         end
     end
 
-    %% ============================================================
-    %% POST-PROCESSING (all CSACs)
-    %% ============================================================
+    %% Plot U_csac convergence
+    fig_U = figure('Visible', 'off', 'Position', [100, 100, 800, 400]);
+    plot(1:numel(U_csac_history), U_csac_history, 'b-', 'LineWidth', 2, ...
+        'DisplayName', 'Estimated');
+    yline(U_csac_true, 'r--', 'LineWidth', 2, 'DisplayName', 'True');
+    xlabel('Update step');
+    ylabel('U_{csac} [W/m/K]');
+    title(sprintf('Network %d — U_{csac} Convergence (init=%.4f, final=%.4f, true=%.4f)', ...
+        network_id, U_csac_history(1), U_csac_history(end), U_csac_true));
+    legend('Location', 'best');
+    grid on;
+    if ~exist(output_folder_ukf, 'dir'), mkdir(output_folder_ukf); end
+    saveas(fig_U, fullfile(output_folder_ukf, sprintf('U_csac_convergence_network_%d.png', network_id)));
+    close(fig_U);
+
+    %% Post-processing
     fprintf('\n=== Post-processing network %d ===\n', network_id);
+    fprintf('  Final U_csac: %.4f (true=%.4f, error=%.4f)\n', ...
+        shared_U_csac, U_csac_true, shared_U_csac - U_csac_true);
+
+    % Plot CSAC U diagnostics
+    plot_csac_U_diagnostics(all_cs, csac_ids, shared_U_csac, network_id, output_folder_ukf);
+
     network_kpis = post_process_all_csacs(all_cs, all_true_traj, csac_ids, ...
         network_id, output_folder_ukf, kpi_config);
     all_kpi_summaries = [all_kpi_summaries; network_kpis]; %#ok<AGROW>

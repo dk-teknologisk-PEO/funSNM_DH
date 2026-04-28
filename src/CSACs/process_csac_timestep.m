@@ -126,4 +126,5 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     %% ================================================================
     cs.ukf_states = apply_master_offset(cs.ukf_states, ukf_master_offset, ...
         num_active_houses, config);
+
 end

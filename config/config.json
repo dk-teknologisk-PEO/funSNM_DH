@@ -12,7 +12,7 @@
     "datasets": {
       "num_datasets": 1,
       "fixed_datasets": true,
-      "datasets": [1, 2, 3]
+      "datasets": [1]
     },
     "paths": {
       "topology": "C:/Users/PEO/Documents/GitHub/DH simulation/network_topologies",
@@ -51,6 +51,18 @@
       "innovation_gate_N_sigma": 3.0,
       "hibernation_reset_threshold_hours": 720
     },
+    "csac_U_estimation": {
+      "enabled": true,
+      "update_interval_timesteps": 6,
+      "gain": 0.01,
+      "max_adjustment_per_step": 0.002,
+      "U_min": 0.05,
+      "U_max": 0.50,
+      "min_correlation": 0.3,
+      "warmup_timesteps": 50,
+      "P_offset_convergence_threshold": 0.5,
+      "P_U_convergence_threshold": 0.05
+    },
     "heating_season": {
       "nis_threshold": 3.0,
       "window_days": 5,
@@ -81,7 +93,9 @@
       "offset_min": -2.0,
       "offset_max": 2.0,
       "U_init_mean": 0.12,
-      "U_init_std": 0.01
+      "U_init_std": 0.01,
+      "U_csac_init_mean": 0.20,
+      "U_csac_init_std": 0.05
     },
     "consecutive_rejection": {
       "max_consecutive": 10,
