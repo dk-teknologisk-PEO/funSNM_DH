@@ -202,6 +202,6 @@ grid on;
 
 output_folder = fullfile('results', 'drift_test');
 if ~exist(output_folder, 'dir'), mkdir(output_folder); end
-saveas(fig, fullfile(output_folder, 'drift_trajectory_comparison.png'));
+save_figure(fig, fullfile(output_folder, 'drift_trajectory_comparison'));
 
 fprintf('\nDrift test complete. Check results/drift_test/ for plots.\n');

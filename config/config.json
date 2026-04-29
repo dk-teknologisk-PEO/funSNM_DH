@@ -64,7 +64,7 @@
       "P_U_convergence_threshold": 0.05
     },
     "main_pipe_U_estimation": {
-      "enabled": true,
+      "enabled": false,
       "update_interval_timesteps": 6,
       "gain": 0.01,
       "max_adjustment_per_step": 0.002,
@@ -75,7 +75,7 @@
       "P_offset_convergence_threshold": 0.5
     },
     "main_pipe_coupling": {
-      "enabled": true,
+      "enabled": false,
       "warmup_timesteps": 100,
       "max_blend_alpha": 0.5
     },

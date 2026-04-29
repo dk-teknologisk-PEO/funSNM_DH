@@ -238,7 +238,7 @@ for network_id = networks
     title(sprintf('Network %d — U_{csac} (init=%.4f, final=%.4f, true=%.4f)', ...
         network_id, U_csac_history(1), U_csac_history(end), U_csac_true));
     legend('Location', 'best'); grid on;
-    saveas(fig_Uc, fullfile(output_folder_ukf, sprintf('U_csac_convergence_network_%d.png', network_id)));
+    save_figure(fig_Uc, fullfile(output_folder_ukf, sprintf('U_csac_convergence_network_%d', network_id)));
     close(fig_Uc);
 
     % U_main convergence
@@ -249,7 +249,7 @@ for network_id = networks
     title(sprintf('Network %d — U_{main} (init=%.4f, final=%.4f, true=%.4f)', ...
         network_id, U_main_history(1), U_main_history(end), U_main_true));
     legend('Location', 'best'); grid on;
-    saveas(fig_Um, fullfile(output_folder_ukf, sprintf('U_main_convergence_network_%d.png', network_id)));
+    save_figure(fig_Um, fullfile(output_folder_ukf, sprintf('U_main_convergence_network_%d', network_id)));
     close(fig_Um);
 
     %% ============================================================
