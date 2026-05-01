@@ -123,7 +123,7 @@ function plot_diagnostics(logger, ground_truth, csac_id, network_name, output_fo
     if ~exist(output_folder, 'dir')
         mkdir(output_folder);
     end
-    saveas(fig, fullfile(output_folder, strcat(fig_name, '.png')));
+    save_figure(fig, fullfile(output_folder, fig_name));
     close(fig);
     fprintf('Saved diagnostic plot to %s\n', fullfile(output_folder, strcat(fig_name, '.png')));
 end

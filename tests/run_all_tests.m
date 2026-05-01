@@ -28,6 +28,10 @@ test_functions = {
     @test_build_daily_T_air_max_table
     @test_print_csac_summary
     @test_check_consecutive_rejections
+    @test_compute_csac_slope_signal
+    @test_update_shared_U_csac
+    @test_estimate_main_pipe_temp
+    @test_estimate_main_pipe_U
 };
 
 for i = 1:numel(test_functions)

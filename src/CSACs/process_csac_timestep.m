@@ -2,6 +2,9 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     daily_T_air_max_table, P_base, config, csac_id)
 %PROCESS_CSAC_TIMESTEP Processes a single timestep for one CSAC.
 
+    % Always log the timestamp
+    cs.logger.timestamps(t) = time;
+
     %% Unpack gating config
     absolute_flow_floor_kg_h = config.project.cutoff.flow_cutoff;
     delta_T_gate_threshold = config.project.cutoff.delta_T_gate_threshold;
@@ -30,7 +33,6 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
                 cs.logger.covariance_posterior(:, i, t) = cs.logger.covariance_posterior(:, i, t-1);
             end
         end
-        cs.logger.timestamps(t) = time;
         return;
     end
 
@@ -40,15 +42,28 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     num_active_houses = sum(current_data.flow_kg_h >= absolute_flow_floor_kg_h);
     is_csac_active = (num_active_houses >= config.project.initialization.min_active_houses);
 
-    [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(...
-        current_data, current_T_soil_C, cs.U_csac, absolute_flow_floor_kg_h, cs.ukf_states);
+    % Store total flow for main pipe estimation
+    cs.current_total_flow = sum(current_data.flow_kg_h);
+
+    % Use T_inlet_from_main if available (set by reference sensor blending)
+    if isfield(cs, 'T_inlet_from_main') && isfinite(cs.T_inlet_from_main)
+        [T_junction_ukf_C, ukf_master_offset, fit_diag] = calculate_main_pipe_temp(...
+            current_data, current_T_soil_C, cs.U_csac, absolute_flow_floor_kg_h, ...
+            cs.ukf_states, cs.T_inlet_from_main);
+        cs.T_inlet_fitted = cs.T_inlet_from_main;
+        cs.T_inlet_sigma = 0;
+    else
+        [T_junction_ukf_C, ukf_master_offset, fit_diag] = calculate_main_pipe_temp(...
+            current_data, current_T_soil_C, cs.U_csac, absolute_flow_floor_kg_h, cs.ukf_states);
+        cs.T_inlet_fitted = fit_diag.T_inlet_fitted;
+        cs.T_inlet_sigma = fit_diag.sigma_T_inlet;
+    end
 
     if all(isnan(T_junction_ukf_C))
         return;
     end
 
     current_data.T_main_ukf_C = T_junction_ukf_C;
-    cs.logger.timestamps(t) = time;
 
     %% ================================================================
     %% PER-HOUSE UKF UPDATES
@@ -126,5 +141,4 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     %% ================================================================
     cs.ukf_states = apply_master_offset(cs.ukf_states, ukf_master_offset, ...
         num_active_houses, config);
-
 end

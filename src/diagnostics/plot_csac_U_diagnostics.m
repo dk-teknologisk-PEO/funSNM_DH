@@ -130,7 +130,7 @@ function plot_csac_U_diagnostics(cs, csac_id, network_id, output_folder)
 
     %% Save
     prefix = sprintf('network_%d_csac_%d', network_id, csac_id);
-    saveas(fig, fullfile(output_folder, sprintf('csac_U_diagnostics_%s.png', prefix)));
+    save_figure(fig, fullfile(output_folder, sprintf('csac_U_diag_network_%d', network_id)));
     close(fig);
     fprintf('Saved CSAC U diagnostics to %s\n', ...
         fullfile(output_folder, sprintf('csac_U_diagnostics_%s.png', prefix)));

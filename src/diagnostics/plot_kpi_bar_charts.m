@@ -66,7 +66,7 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
     grid on;
     hold off;
 
-    saveas(fig1, fullfile(output_folder, sprintf('kpi_offset_bar_%s.png', prefix)));
+    save_figure(fig1, fullfile(output_folder, sprintf('kpi_offset_bar_%s', prefix)));
     close(fig1);
 
     %% Figure 2: U-Value Estimates
@@ -96,6 +96,6 @@ function plot_kpi_bar_charts(house_ids, csac_id, ...
     grid on;
     hold off;
 
-    saveas(fig2, fullfile(output_folder, sprintf('kpi_U_bar_%s.png', prefix)));
+    save_figure(fig2, fullfile(output_folder, sprintf('kpi_U_bar_%s', prefix)));
     close(fig2);
 end
