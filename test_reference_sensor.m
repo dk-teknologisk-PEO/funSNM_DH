@@ -31,6 +31,8 @@ drift_config.offset_step = 0;
 [T_soil_C, T_air_C] = soilTemp(config);
 daily_T_air_max_table = build_daily_T_air_max_table(T_air_C);
 
+measurement_noise = config.project.initialization.ukf.measurement_noise;
+
 %% Load data
 networks = config.project.datasets.datasets(:)';
 network_id = networks(1);
@@ -39,29 +41,25 @@ timestamps = unique(meter_data.timestamp);
 csac_ids = [topology.cul_de_sacs.id];
 num_csacs = numel(csac_ids);
 
-%% True U values for reference
 U_csac_true = topology.pipe_parameters.csac_pipe.insulation_W_m_K;
 U_main_true = topology.pipe_parameters.main_pipe.insulation_W_m_K;
 
 %% Define sensor scenarios
-sensor_noise = 0.1; % °C
+sensor_noise = 0.1;
 
 scenarios = struct();
 
 scenarios(1).name = 'no_sensor';
 scenarios(1).sensor = struct('type', 'none', 'csac_id', 0, 'noise_std', 0, 'seed', 42);
-scenarios(1).coupling_enabled = false;
 
 scenarios(2).name = 'plant_inlet';
 scenarios(2).sensor = struct('type', 'plant', 'csac_id', 0, 'noise_std', sensor_noise, 'seed', 42);
-scenarios(2).coupling_enabled = true;
 
 for c = 1:num_csacs
     idx = 2 + c;
     scenarios(idx).name = sprintf('csac_%d_junction', csac_ids(c));
     scenarios(idx).sensor = struct('type', 'csac_junction', 'csac_id', csac_ids(c), ...
         'noise_std', sensor_noise, 'seed', 42);
-    scenarios(idx).coupling_enabled = true;
 end
 
 %% Run each scenario
@@ -72,32 +70,45 @@ for s = 1:numel(scenarios)
     fprintf('SCENARIO %d/%d: %s\n', s, numel(scenarios), scenarios(s).name);
     fprintf('========================================\n');
 
-    % Initialize all CSACs
+    % Initialize all CSACs (same random seed for all scenarios)
     [all_cs, all_true_traj] = initialize_all_csacs(topology, meter_data, timestamps, ...
         Q_base, R_base, P_base, innovation_gate_initial, config, network_id, drift_config);
 
-    % Initialize shared U_csac (same random init for all scenarios)
     shared_U_csac = all_cs{1}.U_csac;
     for c = 1:num_csacs
         all_cs{c}.U_csac = shared_U_csac;
     end
 
-    % U_main: use true value with small uncertainty for propagation
-    % NOT randomly initialized — we want to isolate the sensor effect
+    % U_main: use true value (we're testing sensor impact, not U_main estimation)
     shared_U_main = U_main_true;
-    U_main_uncertainty = 0.01; % std for propagation uncertainty
+    U_main_uncertainty = 0.01;
 
     U_csac_cfg = config.project.csac_U_estimation;
-    U_main_cfg = config.project.main_pipe_U_estimation;
     U_csac_update_counter = 0;
     U_csac_history = shared_U_csac;
+
+    has_sensor = ~strcmp(scenarios(s).sensor.type, 'none');
 
     % Load reference sensor data
     ref_data = load_reference_sensor_data(network_data, scenarios(s).sensor, network_id);
 
-    % Timestep loop
-    main_coupling_counter = 0;
+    % Precompute junction positions
+    junction_positions = zeros(num_csacs, 1);
+    for c = 1:num_csacs
+        topo_idx = find([topology.cul_de_sacs.id] == csac_ids(c));
+        junction_positions(c) = topology.cul_de_sacs(topo_idx).dist_on_main_m;
+    end
 
+    if strcmp(scenarios(s).sensor.type, 'plant')
+        sensor_pos = 0;
+    elseif strcmp(scenarios(s).sensor.type, 'csac_junction')
+        topo_idx = find([topology.cul_de_sacs.id] == scenarios(s).sensor.csac_id);
+        sensor_pos = topology.cul_de_sacs(topo_idx).dist_on_main_m;
+    else
+        sensor_pos = NaN;
+    end
+
+    % Timestep loop
     for t = 1:length(timestamps)
         time = timestamps(t);
         current_T_soil_C = T_soil_C(T_soil_C.time == time, :).values;
@@ -114,11 +125,13 @@ for s = 1:numel(scenarios)
             end
         end
 
-        % Process each CSAC
+        %% ============================================================
+        %% STEP 1: Process each CSAC independently (get T_inlet + sigma)
+        %% ============================================================
         any_csac_active = false;
         for c = 1:num_csacs
             cs = all_cs{c};
-            cs.T_inlet_from_main = NaN;
+            cs.T_inlet_from_main = NaN; % always start fresh
 
             current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
             current_data = sortrows(current_data, 'house_id');
@@ -139,55 +152,80 @@ for s = 1:numel(scenarios)
             continue
         end
 
-        % Main pipe coupling using sensor data with uncertainty propagation
-        main_coupling_counter = main_coupling_counter + 1;
-        if scenarios(s).coupling_enabled && isfinite(ref_T) && ...
-           main_coupling_counter >= config.project.main_pipe_coupling.warmup_timesteps
+        %% ============================================================
+        %% STEPS 2-4: Merge sensor with CSAC estimates (if sensor available)
+        %% ============================================================
+        if has_sensor && isfinite(ref_T)
 
-            % Get junction positions and flows
-            junction_positions = zeros(num_csacs, 1);
+            % Step 2: Propagate reference sensor through main pipe
             junction_flows = zeros(num_csacs, 1);
             for c = 1:num_csacs
-                topo_idx = find([topology.cul_de_sacs.id] == csac_ids(c));
-                junction_positions(c) = topology.cul_de_sacs(topo_idx).dist_on_main_m;
                 junction_flows(c) = all_cs{c}.current_total_flow;
             end
 
-            % Determine sensor position
-            if strcmp(scenarios(s).sensor.type, 'plant')
-                sensor_pos = 0;
-            else
-                topo_idx = find([topology.cul_de_sacs.id] == scenarios(s).sensor.csac_id);
-                sensor_pos = topology.cul_de_sacs(topo_idx).dist_on_main_m;
-            end
-
-            % Propagate sensor temperature with uncertainty
-            [T_prop, T_unc] = propagate_sensor_temperature(...
+            [T_from_sensor, T_sensor_unc] = propagate_sensor_temperature(...
                 ref_T, sensor_pos, scenarios(s).sensor.noise_std, ...
                 junction_positions, junction_flows, ...
                 shared_U_main, U_main_uncertainty, current_T_soil_C, topology);
 
-            % Blend propagated temperature with CSAC's own estimate
+            % Step 3: Merge sensor estimate with CSAC's own estimate
             for c = 1:num_csacs
-                if isfinite(T_prop(c)) && isfinite(T_unc(c)) && T_unc(c) > 0
-                    T_sensor = T_prop(c);
-                    sigma_sensor = T_unc(c);
+                cs = all_cs{c};
 
-                    if isfield(all_cs{c}, 'T_inlet_fitted') && isfinite(all_cs{c}.T_inlet_fitted)
-                        T_own = all_cs{c}.T_inlet_fitted;
-                        sigma_own = 0.5;
-
-                        w_sensor = 1 / sigma_sensor^2;
-                        w_own = 1 / sigma_own^2;
-                        T_blended = (w_sensor * T_sensor + w_own * T_own) / (w_sensor + w_own);
-
-                        all_cs{c}.T_inlet_from_main = T_blended;
-                    end
+                if ~isfinite(T_from_sensor(c)) || ~isfinite(T_sensor_unc(c))
+                    continue
                 end
+                if ~isfield(cs, 'T_inlet_fitted') || ~isfinite(cs.T_inlet_fitted)
+                    continue
+                end
+                if ~isfield(cs, 'T_inlet_sigma') || ~isfinite(cs.T_inlet_sigma)
+                    continue
+                end
+
+                % CSAC's own estimate and uncertainty
+                T_csac = cs.T_inlet_fitted;
+                sigma_csac = cs.T_inlet_sigma;
+
+                % Add measurement noise floor to CSAC uncertainty
+                sigma_csac_total = sqrt(sigma_csac^2 + (measurement_noise / sqrt(max(1, cs.num_houses)))^2);
+
+                % Sensor propagated estimate and uncertainty
+                T_sensor = T_from_sensor(c);
+                sigma_sensor = T_sensor_unc(c);
+
+                % Ensure minimum uncertainties to avoid division issues
+                sigma_csac_total = max(sigma_csac_total, 0.01);
+                sigma_sensor = max(sigma_sensor, 0.01);
+
+                % Inverse-variance weighted merge
+                w_csac = 1 / sigma_csac_total^2;
+                w_sensor = 1 / sigma_sensor^2;
+                T_merged = (w_csac * T_csac + w_sensor * T_sensor) / (w_csac + w_sensor);
+
+                all_cs{c}.T_inlet_from_main = T_merged;
+            end
+
+            % Step 4: Re-process CSACs with merged T_inlet
+            for c = 1:num_csacs
+                cs = all_cs{c};
+
+                if ~isfield(cs, 'T_inlet_from_main') || ~isfinite(cs.T_inlet_from_main)
+                    continue
+                end
+
+                current_data = cs.meter_data(cs.meter_data.timestamp == time, :);
+                current_data = sortrows(current_data, 'house_id');
+                if isempty(current_data)
+                    continue
+                end
+
+                cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C, ...
+                    daily_T_air_max_table, P_base, config, csac_ids(c));
+                all_cs{c} = cs;
             end
         end
 
-        % U_csac estimation
+        %% U_csac estimation
         if U_csac_cfg.enabled
             U_csac_update_counter = U_csac_update_counter + 1;
             if U_csac_update_counter >= U_csac_cfg.warmup_timesteps && ...
@@ -202,7 +240,7 @@ for s = 1:numel(scenarios)
         end
     end
 
-    % Compute KPIs
+    %% Compute KPIs
     output_folder = fullfile('results', 'sensor_test', scenarios(s).name);
     all_kpi = table();
     for c = 1:num_csacs
@@ -211,8 +249,7 @@ for s = 1:numel(scenarios)
         all_kpi = [all_kpi; kpi]; %#ok<AGROW>
     end
 
-    % Compute additional metrics
-    % Mean offset bias (absolute level shift across all houses)
+    %% Compute additional metrics
     all_offsets = [];
     all_true_offsets = [];
     for c = 1:num_csacs
@@ -223,18 +260,8 @@ for s = 1:numel(scenarios)
         end
     end
     offset_errors = all_offsets - all_true_offsets;
-    mean_offset_bias = mean(offset_errors);
-    std_offset_error = std(offset_errors);
 
-    results(s).name = scenarios(s).name;
-    results(s).kpis = all_kpi;
-    results(s).U_csac_final = shared_U_csac;
-    results(s).U_csac_history = U_csac_history;
-    results(s).mean_offset_bias = mean_offset_bias;
-    results(s).std_offset_error = std_offset_error;
-    results(s).all_cs = all_cs;
-
-    % Find U_csac convergence step (first time within 0.005 of true)
+    % U_csac convergence step
     U_csac_converged_step = NaN;
     for k = 1:numel(U_csac_history)
         if abs(U_csac_history(k) - U_csac_true) < 0.005
@@ -242,12 +269,20 @@ for s = 1:numel(scenarios)
             break;
         end
     end
+
+    results(s).name = scenarios(s).name;
+    results(s).kpis = all_kpi;
+    results(s).U_csac_final = shared_U_csac;
+    results(s).U_csac_history = U_csac_history;
     results(s).U_csac_converged_step = U_csac_converged_step;
+    results(s).mean_offset_bias = mean(offset_errors);
+    results(s).std_offset_error = std(offset_errors);
+    results(s).all_cs = all_cs;
 
     fprintf('  Final: U_csac=%.4f (true=%.4f, err=%.4f)\n', ...
         shared_U_csac, U_csac_true, shared_U_csac - U_csac_true);
-    fprintf('  Offset bias: mean=%.4f°C, std=%.4f°C\n', mean_offset_bias, std_offset_error);
-    fprintf('  U_csac converged at step: %s\n', mat2str(U_csac_converged_step));
+    fprintf('  Offset bias: mean=%.4f°C, std=%.4f°C\n', ...
+        results(s).mean_offset_bias, results(s).std_offset_error);
 end
 
 %% Print comparison table
@@ -299,10 +334,9 @@ for s = 1:numel(results)
     end
     fprintf('\n');
 end
-fprintf('\n');
 
-%% Per-CSAC offset bias (signed mean error)
-fprintf('PER-CSAC OFFSET BIAS (signed mean)\n');
+%% Per-CSAC offset bias
+fprintf('\nPER-CSAC OFFSET BIAS (signed mean)\n');
 fprintf('%-20s', 'Scenario');
 for c = 1:num_csacs
     fprintf(' | CSAC%d', csac_ids(c));
@@ -323,9 +357,8 @@ for s = 1:numel(results)
     end
     fprintf('\n');
 end
-fprintf('========================================\n');
 
-%% Convergence speed comparison
+%% Convergence speed
 fprintf('\nCONVERGENCE SPEED\n');
 fprintf('%-20s | %12s | %12s\n', 'Scenario', 'Uc conv step', 'Off conv days');
 fprintf('%s\n', repmat('-', 1, 50));

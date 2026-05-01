@@ -36,7 +36,7 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
         return;
     end
 
-%% ================================================================
+    %% ================================================================
     %% MAIN PIPE TEMPERATURE ESTIMATION
     %% ================================================================
     num_active_houses = sum(current_data.flow_kg_h >= absolute_flow_floor_kg_h);
@@ -45,26 +45,18 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     % Store total flow for main pipe estimation
     cs.current_total_flow = sum(current_data.flow_kg_h);
 
-    % Use blended T_inlet if available from main pipe coupling
+    % Use T_inlet_from_main if available (set by reference sensor blending)
     if isfield(cs, 'T_inlet_from_main') && isfinite(cs.T_inlet_from_main)
-        [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(...
+        [T_junction_ukf_C, ukf_master_offset, fit_diag] = calculate_main_pipe_temp(...
             current_data, current_T_soil_C, cs.U_csac, absolute_flow_floor_kg_h, ...
             cs.ukf_states, cs.T_inlet_from_main);
         cs.T_inlet_fitted = cs.T_inlet_from_main;
+        cs.T_inlet_sigma = 0;
     else
-        [T_junction_ukf_C, ukf_master_offset] = calculate_main_pipe_temp(...
+        [T_junction_ukf_C, ukf_master_offset, fit_diag] = calculate_main_pipe_temp(...
             current_data, current_T_soil_C, cs.U_csac, absolute_flow_floor_kg_h, cs.ukf_states);
-
-        if ~all(isnan(T_junction_ukf_C))
-            first_valid = find(isfinite(T_junction_ukf_C), 1, 'first');
-            if ~isempty(first_valid)
-                cs.T_inlet_fitted = T_junction_ukf_C(first_valid);
-            else
-                cs.T_inlet_fitted = NaN;
-            end
-        else
-            cs.T_inlet_fitted = NaN;
-        end
+        cs.T_inlet_fitted = fit_diag.T_inlet_fitted;
+        cs.T_inlet_sigma = fit_diag.sigma_T_inlet;
     end
 
     if all(isnan(T_junction_ukf_C))
@@ -72,7 +64,7 @@ function cs = process_csac_timestep(cs, t, time, current_data, current_T_soil_C,
     end
 
     current_data.T_main_ukf_C = T_junction_ukf_C;
-    
+
     %% ================================================================
     %% PER-HOUSE UKF UPDATES
     %% ================================================================
