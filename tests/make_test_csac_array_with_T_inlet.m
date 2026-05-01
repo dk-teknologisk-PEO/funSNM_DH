@@ -11,6 +11,7 @@ function all_cs = make_test_csac_array_with_T_inlet(T_inlets)
         cs.current_total_flow = 500;
         cs.gate_accept_count = 100;
         cs.season_state = initialize_season_state();
+        cs.season_state.active = isfinite(T_inlets(c));
         all_cs{c} = cs;
     end
 end

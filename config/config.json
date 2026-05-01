@@ -56,26 +56,26 @@
       "update_interval_timesteps": 6,
       "gain": 0.01,
       "max_adjustment_per_step": 0.002,
-      "U_min": 0.05,
-      "U_max": 0.50,
+      "U_min": 0.13,
+      "U_max": 0.19,
       "min_correlation": 0.3,
       "warmup_timesteps": 50,
       "P_offset_convergence_threshold": 0.5,
       "P_U_convergence_threshold": 0.05
     },
     "main_pipe_U_estimation": {
-      "enabled": false,
+      "enabled": true,
       "update_interval_timesteps": 6,
       "gain": 0.01,
       "max_adjustment_per_step": 0.002,
-      "U_min": 0.05,
-      "U_max": 0.50,
+      "U_min": 0.15,
+      "U_max": 0.26,
       "min_correlation": 0.3,
       "warmup_timesteps": 50,
       "P_offset_convergence_threshold": 0.5
     },
     "main_pipe_coupling": {
-      "enabled": false,
+      "enabled": true,
       "warmup_timesteps": 100,
       "max_blend_alpha": 0.5
     },

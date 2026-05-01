@@ -204,7 +204,7 @@ for network_id = networks
             end
         end
 
-        %% ============================================================
+%% ============================================================
         %% U_main ESTIMATION (periodically)
         %% ============================================================
         if U_main_cfg.enabled
@@ -213,11 +213,11 @@ for network_id = networks
                mod(U_main_update_counter, U_main_cfg.update_interval_timesteps) == 0
 
                 [U_main_new, U_main_diag] = estimate_main_pipe_U(...
-                    all_cs, csac_ids, topology, shared_U_main, config);
+                    all_cs, csac_ids, topology, shared_U_main, current_T_soil_C, config);
                 if U_main_diag.adjusted
-                    fprintf('  U_main: %.4f -> %.4f (grad=%.4f, corr=%.2f)\n', ...
-                        shared_U_main, U_main_new, U_main_diag.total_gradient, ...
-                        U_main_diag.correlation);
+                    fprintf('  U_main: %.4f -> %.4f (dir=%d, costs=[%.2f,%.2f,%.2f])\n', ...
+                        shared_U_main, U_main_new, U_main_diag.direction, ...
+                        U_main_diag.costs(1), U_main_diag.costs(2), U_main_diag.costs(3));
                 end
                 shared_U_main = U_main_new;
                 U_main_history(end+1) = shared_U_main;
@@ -251,6 +251,26 @@ for network_id = networks
     legend('Location', 'best'); grid on;
     save_figure(fig_Um, fullfile(output_folder_ukf, sprintf('U_main_convergence_network_%d', network_id)));
     close(fig_Um);
+
+    %% Save U-value history as CSV
+    % Build weekly summary
+    U_history_table = table();
+    U_history_table.update_step = (1:numel(U_csac_history))';
+    U_history_table.U_csac = U_csac_history(:);
+    U_history_table.U_csac_true = repmat(U_csac_true, numel(U_csac_history), 1);
+
+    if ~exist(output_folder_ukf, 'dir'), mkdir(output_folder_ukf); end
+    writetable(U_history_table, fullfile(output_folder_ukf, ...
+        sprintf('U_csac_history_network_%d.csv', network_id)));
+
+    U_main_table = table();
+    U_main_table.update_step = (1:numel(U_main_history))';
+    U_main_table.U_main = U_main_history(:);
+    U_main_table.U_main_true = repmat(U_main_true, numel(U_main_history), 1);
+    writetable(U_main_table, fullfile(output_folder_ukf, ...
+        sprintf('U_main_history_network_%d.csv', network_id)));
+
+    fprintf('  Saved U-value histories to CSV\n');
 
     %% ============================================================
     %% POST-PROCESSING
