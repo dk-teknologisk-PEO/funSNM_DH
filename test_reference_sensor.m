@@ -37,51 +37,11 @@ sensor_noise = 0.1;
 
 networks_to_test = config.project.datasets.datasets(:)';
 num_networks = numel(networks_to_test);
+output_folder = fullfile('results', 'sensor_test');
+if ~exist(output_folder, 'dir'), mkdir(output_folder); end
 
-%% Build scenario list
-% We need: no sensor, 4 single sensors, 6 dual sensor combinations
-% CSAC IDs will be determined per network, but we define scenarios by index
-scenario_defs = struct();
-idx = 1;
-
-% No sensor
-scenario_defs(idx).name = 'no_sensor';
-scenario_defs(idx).sensor_indices = [];
-idx = idx + 1;
-
-% Single sensors (indices 1-4 for CSACs)
-for c = 1:4
-    scenario_defs(idx).name = sprintf('single_csac_%d', c-1);
-    scenario_defs(idx).sensor_indices = c;
-    idx = idx + 1;
-end
-
-% Dual sensor combinations
-combos = nchoosek(1:4, 2);
-for k = 1:size(combos, 1)
-    scenario_defs(idx).name = sprintf('dual_csac_%d_%d', combos(k,1)-1, combos(k,2)-1);
-    scenario_defs(idx).sensor_indices = combos(k,:);
-    idx = idx + 1;
-end
-
-num_scenarios = numel(scenario_defs);
-fprintf('Testing %d scenarios across %d networks\n', num_scenarios, num_networks);
-
-%% Pre-allocate aggregate results
-agg_results = struct();
-for s = 1:num_scenarios
-    agg_results(s).name = scenario_defs(s).name;
-    agg_results(s).all_tw_mae_offset = [];
-    agg_results(s).all_final_err_offset = [];
-    agg_results(s).all_tw_mae_U = [];
-    agg_results(s).all_final_err_U = [];
-    agg_results(s).all_offset_bias = [];
-    agg_results(s).all_offset_std = [];
-    agg_results(s).all_U_csac_err = [];
-    agg_results(s).all_rej_pct = [];
-    agg_results(s).all_per_csac_final_err = [];
-    agg_results(s).all_per_csac_bias = [];
-end
+% Long-form table with one row per (network, scenario) for global strategy analysis.
+all_scenario_rows = table();
 
 %% Main loop over networks
 for net_idx = 1:num_networks
@@ -104,6 +64,35 @@ for net_idx = 1:num_networks
         topo_idx = find([topology.cul_de_sacs.id] == csac_ids(c));
         junction_positions(c) = topology.cul_de_sacs(topo_idx).dist_on_main_m;
     end
+
+    % Build scenarios dynamically for this network size.
+    scenario_defs = struct();
+    idx = 1;
+
+    scenario_defs(idx).name = 'no_sensor';
+    scenario_defs(idx).sensor_indices = [];
+    idx = idx + 1;
+
+    for c = 1:num_csacs
+        scenario_defs(idx).name = sprintf('single_csac_%d', csac_ids(c));
+        scenario_defs(idx).sensor_indices = c;
+        idx = idx + 1;
+    end
+
+    if num_csacs >= 2
+        combos = nchoosek(1:num_csacs, 2);
+        for k = 1:size(combos, 1)
+            c1 = csac_ids(combos(k, 1));
+            c2 = csac_ids(combos(k, 2));
+            scenario_defs(idx).name = sprintf('dual_csac_%d_%d', c1, c2);
+            scenario_defs(idx).sensor_indices = combos(k, :);
+            idx = idx + 1;
+        end
+    end
+
+    num_scenarios = numel(scenario_defs);
+    fprintf('Testing %d scenarios for network %d (num_csacs=%d)\n', ...
+        num_scenarios, network_id, num_csacs);
 
     % Load all sensor data columns at once
     all_sensor_data = cell(num_csacs, 1);
@@ -343,12 +332,69 @@ for net_idx = 1:num_networks
             net_results(s).offset_bias, net_results(s).U_csac_err, rej_pct);
     end
 
+    % Append this network's scenarios to long-form aggregate table.
+    baseline = net_results(1).final_err_offset;
+    pos_min = min(junction_positions);
+    pos_range = max(junction_positions) - pos_min;
+    if pos_range <= eps
+        pos_range = 1;
+    end
+
+    for s = 1:num_scenarios
+        r = net_results(s);
+        sensor_idx = scenario_defs(s).sensor_indices;
+        sensor_csac_ids = csac_ids(sensor_idx);
+        sensor_pos_norm = (junction_positions(sensor_idx) - pos_min) / pos_range;
+
+        one_sensor_zone = 'n/a';
+        two_sensor_pattern = 'n/a';
+        strategy_group = 'other';
+
+        if isempty(sensor_idx)
+            strategy_group = 'zero_sensors';
+        elseif numel(sensor_idx) == 1
+            one_sensor_zone = classify_single_sensor_zone(sensor_pos_norm(1));
+            strategy_group = ['one_sensor_' one_sensor_zone];
+        elseif numel(sensor_idx) == 2
+            two_sensor_pattern = classify_two_sensor_pattern(sort(sensor_pos_norm(:)'));
+            strategy_group = two_sensor_pattern;
+        else
+            strategy_group = sprintf('multi_sensor_%d', numel(sensor_idx));
+        end
+
+        improvement = 100 * (baseline - r.final_err_offset) / max(abs(baseline), eps);
+
+        row = table();
+        row.network_id = network_id;
+        row.num_csacs = num_csacs;
+        row.scenario = {r.name};
+        row.num_sensors = numel(sensor_idx);
+        row.sensor_csac_ids = {strjoin(arrayfun(@(x) sprintf('%d', x), sensor_csac_ids, 'UniformOutput', false), ',')};
+        row.strategy_group = {strategy_group};
+        row.one_sensor_zone = {one_sensor_zone};
+        row.two_sensor_pattern = {two_sensor_pattern};
+        row.tw_mae_offset = r.tw_mae_offset;
+        row.final_err_offset = r.final_err_offset;
+        row.offset_bias = r.offset_bias;
+        row.offset_std = r.offset_std;
+        row.tw_mae_U = r.tw_mae_U;
+        row.final_err_U = r.final_err_U;
+        row.U_csac_err = r.U_csac_err;
+        row.rej_pct = r.rej_pct;
+        row.mean_per_csac_final_err = mean(r.per_csac_final_err, 'omitnan');
+        row.mean_per_csac_bias = mean(r.per_csac_bias, 'omitnan');
+        row.improvement_vs_no_sensor_pct = improvement;
+
+        if isempty(all_scenario_rows)
+            all_scenario_rows = row;
+        else
+            all_scenario_rows = [all_scenario_rows; row]; %#ok<AGROW>
+        end
+    end
+
     %% ============================================================
     %% SAVE PER-NETWORK RESULTS
     %% ============================================================
-    output_folder = fullfile('results', 'sensor_test');
-    if ~exist(output_folder, 'dir'), mkdir(output_folder); end
-
     % Build summary table for this network
     summary = table();
     for s = 1:num_scenarios
@@ -465,4 +511,141 @@ for net_idx = 1:num_networks
     fprintf('\n');
 end
 
+%% ============================================================
+%% SAVE OVERALL (CROSS-NETWORK) CONCLUSIONS
+%% ============================================================
+if isempty(all_scenario_rows)
+    fprintf('\nNo scenario rows were collected; skipping overall summaries.\n');
+else
+    writetable(all_scenario_rows, fullfile(output_folder, 'overall_scenario_runs.csv'));
+
+    [g_count, sensor_count_values] = findgroups(all_scenario_rows.num_sensors);
+    by_sensor_count = table();
+    by_sensor_count.num_sensors = sensor_count_values;
+    by_sensor_count.n_runs = splitapply(@numel, all_scenario_rows.final_err_offset, g_count);
+    by_sensor_count.mean_final_err_offset = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.final_err_offset, g_count);
+    by_sensor_count.std_final_err_offset = splitapply(@(x) std(x, 'omitnan'), all_scenario_rows.final_err_offset, g_count);
+    by_sensor_count.mean_improvement_vs_no_sensor_pct = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_count);
+    by_sensor_count.pct_runs_better_than_no_sensor = splitapply(@(x) 100 * mean(x > 0, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_count);
+
+    [g_one, one_zone_values] = findgroups(all_scenario_rows.one_sensor_zone);
+    by_one_sensor_zone = table();
+    by_one_sensor_zone.one_sensor_zone = one_zone_values;
+    by_one_sensor_zone.n_runs = splitapply(@numel, all_scenario_rows.final_err_offset, g_one);
+    by_one_sensor_zone.mean_final_err_offset = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.final_err_offset, g_one);
+    by_one_sensor_zone.mean_improvement_vs_no_sensor_pct = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_one);
+    by_one_sensor_zone.pct_runs_better_than_no_sensor = splitapply(@(x) 100 * mean(x > 0, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_one);
+    by_one_sensor_zone = by_one_sensor_zone(~strcmp(by_one_sensor_zone.one_sensor_zone, 'n/a'), :);
+
+    [g_two, two_pattern_values] = findgroups(all_scenario_rows.two_sensor_pattern);
+    by_two_sensor_pattern = table();
+    by_two_sensor_pattern.two_sensor_pattern = two_pattern_values;
+    by_two_sensor_pattern.n_runs = splitapply(@numel, all_scenario_rows.final_err_offset, g_two);
+    by_two_sensor_pattern.mean_final_err_offset = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.final_err_offset, g_two);
+    by_two_sensor_pattern.mean_improvement_vs_no_sensor_pct = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_two);
+    by_two_sensor_pattern.pct_runs_better_than_no_sensor = splitapply(@(x) 100 * mean(x > 0, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_two);
+    by_two_sensor_pattern = by_two_sensor_pattern(~strcmp(by_two_sensor_pattern.two_sensor_pattern, 'n/a'), :);
+
+    [g_strategy, strategy_values] = findgroups(all_scenario_rows.strategy_group);
+    by_strategy = table();
+    by_strategy.strategy_group = strategy_values;
+    by_strategy.n_runs = splitapply(@numel, all_scenario_rows.final_err_offset, g_strategy);
+    by_strategy.mean_final_err_offset = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.final_err_offset, g_strategy);
+    by_strategy.std_final_err_offset = splitapply(@(x) std(x, 'omitnan'), all_scenario_rows.final_err_offset, g_strategy);
+    by_strategy.mean_improvement_vs_no_sensor_pct = splitapply(@(x) mean(x, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_strategy);
+    by_strategy.pct_runs_better_than_no_sensor = splitapply(@(x) 100 * mean(x > 0, 'omitnan'), all_scenario_rows.improvement_vs_no_sensor_pct, g_strategy);
+    by_strategy = sortrows(by_strategy, 'mean_final_err_offset', 'ascend');
+
+    writetable(by_sensor_count, fullfile(output_folder, 'overall_by_sensor_count.csv'));
+    writetable(by_one_sensor_zone, fullfile(output_folder, 'overall_one_sensor_placement.csv'));
+    writetable(by_two_sensor_pattern, fullfile(output_folder, 'overall_two_sensor_placement.csv'));
+    writetable(by_strategy, fullfile(output_folder, 'overall_results.csv'));
+
+    fid = fopen(fullfile(output_folder, 'overall_terminal.txt'), 'w');
+    fprintf(fid, 'OVERALL STRATEGY RESULTS ACROSS %d NETWORKS\n\n', num_networks);
+
+    fprintf(fid, 'A) SENSOR COUNT (0 vs 1 vs 2)\n');
+    fprintf(fid, '%-10s | %6s | %10s | %10s | %12s\n', ...
+        'Sensors', 'Runs', 'OffFin(mu)', 'OffFin(sd)', 'BetterThan0');
+    fprintf(fid, '%s\n', repmat('-', 1, 62));
+    for i = 1:height(by_sensor_count)
+        fprintf(fid, '%-10d | %6d | %10.3f | %10.3f | %10.1f%%\n', ...
+            by_sensor_count.num_sensors(i), by_sensor_count.n_runs(i), ...
+            by_sensor_count.mean_final_err_offset(i), by_sensor_count.std_final_err_offset(i), ...
+            by_sensor_count.pct_runs_better_than_no_sensor(i));
+    end
+    fprintf(fid, '\n');
+
+    fprintf(fid, 'B) ONE SENSOR PLACEMENT (beginning / middle / end)\n');
+    fprintf(fid, '%-18s | %6s | %10s | %12s\n', ...
+        'Zone', 'Runs', 'OffFin(mu)', 'BetterThan0');
+    fprintf(fid, '%s\n', repmat('-', 1, 58));
+    for i = 1:height(by_one_sensor_zone)
+        fprintf(fid, '%-18s | %6d | %10.3f | %10.1f%%\n', ...
+            by_one_sensor_zone.one_sensor_zone{i}, by_one_sensor_zone.n_runs(i), ...
+            by_one_sensor_zone.mean_final_err_offset(i), ...
+            by_one_sensor_zone.pct_runs_better_than_no_sensor(i));
+    end
+    fprintf(fid, '\n');
+
+    fprintf(fid, 'C) TWO SENSOR PLACEMENT (far / close-begin / close-end)\n');
+    fprintf(fid, '%-22s | %6s | %10s | %12s\n', ...
+        'Pattern', 'Runs', 'OffFin(mu)', 'BetterThan0');
+    fprintf(fid, '%s\n', repmat('-', 1, 64));
+    for i = 1:height(by_two_sensor_pattern)
+        fprintf(fid, '%-22s | %6d | %10.3f | %10.1f%%\n', ...
+            by_two_sensor_pattern.two_sensor_pattern{i}, by_two_sensor_pattern.n_runs(i), ...
+            by_two_sensor_pattern.mean_final_err_offset(i), ...
+            by_two_sensor_pattern.pct_runs_better_than_no_sensor(i));
+    end
+    fprintf(fid, '\n');
+
+    fprintf(fid, 'D) STRATEGY RANKING\n');
+    fprintf(fid, '%-24s | %6s | %10s | %10s | %12s\n', ...
+        'Strategy', 'Runs', 'OffFin(mu)', 'OffFin(sd)', 'BetterThan0');
+    fprintf(fid, '%s\n', repmat('-', 1, 74));
+    for i = 1:height(by_strategy)
+        fprintf(fid, '%-24s | %6d | %10.3f | %10.3f | %10.1f%%\n', ...
+            by_strategy.strategy_group{i}, by_strategy.n_runs(i), ...
+            by_strategy.mean_final_err_offset(i), by_strategy.std_final_err_offset(i), ...
+            by_strategy.pct_runs_better_than_no_sensor(i));
+    end
+    fclose(fid);
+
+    fprintf('Overall results saved to:\n');
+    fprintf('  %s\n', fullfile(output_folder, 'overall_scenario_runs.csv'));
+    fprintf('  %s\n', fullfile(output_folder, 'overall_by_sensor_count.csv'));
+    fprintf('  %s\n', fullfile(output_folder, 'overall_one_sensor_placement.csv'));
+    fprintf('  %s\n', fullfile(output_folder, 'overall_two_sensor_placement.csv'));
+    fprintf('  %s\n', fullfile(output_folder, 'overall_results.csv'));
+    fprintf('  %s\n', fullfile(output_folder, 'overall_terminal.txt'));
+end
+
 fprintf('\nAll networks processed. Results saved to results/sensor_test/\n');
+
+function zone = classify_single_sensor_zone(pos_norm)
+if pos_norm <= 1/3
+    zone = 'beginning';
+elseif pos_norm >= 2/3
+    zone = 'end';
+else
+    zone = 'middle';
+end
+end
+
+function pattern = classify_two_sensor_pattern(pos_norm_sorted)
+spacing = abs(pos_norm_sorted(2) - pos_norm_sorted(1));
+pair_center = mean(pos_norm_sorted);
+
+if spacing > 1/3
+    pattern = 'two_far_apart';
+else
+    if pair_center <= 1/3
+        pattern = 'two_close_beginning';
+    elseif pair_center >= 2/3
+        pattern = 'two_close_end';
+    else
+        pattern = 'two_close_middle';
+    end
+end
+end
