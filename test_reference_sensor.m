@@ -121,7 +121,6 @@ for net_idx = 1:num_networks
     end
     rng('shuffle');
 
-    net_results = struct();
     %% Run each scenario
     for s = 1:num_scenarios
         fprintf('\n--- Network %d, Scenario %d/%d: %s ---\n', ...
@@ -323,146 +322,100 @@ for net_idx = 1:num_networks
         end
         rej_pct = 100 * total_reject / max(1, total_accept + total_reject);
 
-        % Store per-network results
-        net_results(s).name = scenario_defs(s).name;
-        net_results(s).num_sensors = numel(scenario_defs(s).sensor_indices);
-        net_results(s).tw_mae_offset = mean(all_kpi.tw_mae_offset, 'omitnan');
-        net_results(s).final_err_offset = mean(abs(all_kpi.final_err_offset), 'omitnan');
-        net_results(s).offset_bias = mean(offset_errors);
-        net_results(s).offset_std = std(offset_errors);
-        net_results(s).tw_mae_U = mean(all_kpi.tw_mae_U, 'omitnan');
-        net_results(s).final_err_U = mean(abs(all_kpi.final_err_U), 'omitnan');
-        net_results(s).U_csac_err = shared_U_csac - U_csac_true;
-        net_results(s).rej_pct = rej_pct;
-        net_results(s).per_csac_final_err = per_csac_final_err;
-        net_results(s).per_csac_bias = per_csac_bias;
-        net_results(s).csac_ids = csac_ids;
+        % Store aggregate results
+        agg_results(s).all_tw_mae_offset(end+1) = mean(all_kpi.tw_mae_offset, 'omitnan');
+        agg_results(s).all_final_err_offset(end+1) = mean(abs(all_kpi.final_err_offset), 'omitnan');
+        agg_results(s).all_tw_mae_U(end+1) = mean(all_kpi.tw_mae_U, 'omitnan');
+        agg_results(s).all_final_err_U(end+1) = mean(abs(all_kpi.final_err_U), 'omitnan');
+        agg_results(s).all_offset_bias(end+1) = mean(offset_errors);
+        agg_results(s).all_offset_std(end+1) = std(offset_errors);
+        agg_results(s).all_U_csac_err(end+1) = shared_U_csac - U_csac_true;
+        agg_results(s).all_rej_pct(end+1) = rej_pct;
+        % Pad to 4 columns (max CSACs) with NaN for networks with fewer CSACs
+        max_csacs = 4;
+        padded_err = nan(1, max_csacs);
+        padded_bias = nan(1, max_csacs);
+        padded_err(1:num_csacs) = per_csac_final_err;
+        padded_bias(1:num_csacs) = per_csac_bias;
+        agg_results(s).all_per_csac_final_err = [agg_results(s).all_per_csac_final_err; padded_err];
+        agg_results(s).all_per_csac_bias = [agg_results(s).all_per_csac_bias; padded_bias];
 
         fprintf('  Off MAE=%.3f, Final=%.3f, Bias=%+.3f, Uc_err=%+.4f, Rej=%.1f%%\n', ...
-            net_results(s).tw_mae_offset, net_results(s).final_err_offset, ...
-            net_results(s).offset_bias, net_results(s).U_csac_err, rej_pct);
+            mean(all_kpi.tw_mae_offset, 'omitnan'), ...
+            mean(abs(all_kpi.final_err_offset), 'omitnan'), ...
+            mean(offset_errors), ...
+            shared_U_csac - U_csac_true, rej_pct);
     end
-
-    %% ============================================================
-    %% SAVE PER-NETWORK RESULTS
-    %% ============================================================
-    output_folder = fullfile('results', 'sensor_test');
-    if ~exist(output_folder, 'dir'), mkdir(output_folder); end
-
-    % Build summary table for this network
-    summary = table();
-    for s = 1:num_scenarios
-        r = net_results(s);
-        row = table();
-        row.scenario = {r.name};
-        row.num_sensors = r.num_sensors;
-        row.tw_mae_offset = r.tw_mae_offset;
-        row.final_err_offset = r.final_err_offset;
-        row.offset_bias = r.offset_bias;
-        row.offset_std = r.offset_std;
-        row.tw_mae_U = r.tw_mae_U;
-        row.final_err_U = r.final_err_U;
-        row.U_csac_err = r.U_csac_err;
-        row.rej_pct = r.rej_pct;
-
-        % Add per-CSAC columns dynamically
-        for c = 1:num_csacs
-            row.(sprintf('csac_%d_final_err', csac_ids(c))) = r.per_csac_final_err(c);
-            row.(sprintf('csac_%d_bias', csac_ids(c))) = r.per_csac_bias(c);
-        end
-
-        summary = [summary; row]; %#ok<AGROW>
-    end
-
-    writetable(summary, fullfile(output_folder, sprintf('network_%d_results.csv', network_id)));
-
-    % Also save terminal-style text output
-    fid = fopen(fullfile(output_folder, sprintf('network_%d_terminal.txt', network_id)), 'w');
-
-    fprintf(fid, 'NETWORK %d RESULTS\n', network_id);
-    fprintf(fid, 'Number of CSACs: %d\n', num_csacs);
-    fprintf(fid, 'CSAC IDs: [%s]\n', strjoin(arrayfun(@(x) sprintf('%d', x), csac_ids, 'UniformOutput', false), ', '));
-    fprintf(fid, 'Number of houses: %d\n', sum(cellfun(@(cs) cs.num_houses, all_cs)));
-    fprintf(fid, 'U_csac true: %.4f W/m/K\n', U_csac_true);
-    fprintf(fid, 'U_main true: %.4f W/m/K\n', U_main_true);
-    fprintf(fid, '\n');
-
-    % Main comparison table
-    fprintf(fid, '%-20s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n', ...
-        'Scenario', 'Off MAE', 'Off Fin', 'Off Bias', 'Off Std', 'U MAE', 'Uc err', 'Rej %%');
-    fprintf(fid, '%s\n', repmat('-', 1, 100));
-    for s = 1:num_scenarios
-        r = net_results(s);
-        fprintf(fid, '%-20s | %8.3f | %8.3f | %+8.3f | %8.3f | %8.4f | %+8.4f | %7.1f\n', ...
-            r.name, r.tw_mae_offset, r.final_err_offset, r.offset_bias, ...
-            r.offset_std, r.tw_mae_U, r.U_csac_err, r.rej_pct);
-    end
-    fprintf(fid, '\n');
-
-    % Per-CSAC final offset error
-    fprintf(fid, 'PER-CSAC FINAL OFFSET ERROR\n');
-    fprintf(fid, '%-20s', 'Scenario');
-    for c = 1:num_csacs
-        fprintf(fid, ' | CSAC%d', csac_ids(c));
-    end
-    fprintf(fid, '\n%s\n', repmat('-', 1, 20 + num_csacs * 10));
-    for s = 1:num_scenarios
-        r = net_results(s);
-        fprintf(fid, '%-20s', r.name);
-        for c = 1:num_csacs
-            fprintf(fid, ' | %7.3f', r.per_csac_final_err(c));
-        end
-        fprintf(fid, '\n');
-    end
-    fprintf(fid, '\n');
-
-    % Per-CSAC bias
-    fprintf(fid, 'PER-CSAC OFFSET BIAS (signed mean)\n');
-    fprintf(fid, '%-20s', 'Scenario');
-    for c = 1:num_csacs
-        fprintf(fid, ' | CSAC%d', csac_ids(c));
-    end
-    fprintf(fid, '\n%s\n', repmat('-', 1, 20 + num_csacs * 10));
-    for s = 1:num_scenarios
-        r = net_results(s);
-        fprintf(fid, '%-20s', r.name);
-        for c = 1:num_csacs
-            fprintf(fid, ' | %+7.3f', r.per_csac_bias(c));
-        end
-        fprintf(fid, '\n');
-    end
-    fprintf(fid, '\n');
-
-    % Improvement table
-    fprintf(fid, 'IMPROVEMENT vs NO SENSOR (Final offset error)\n');
-    fprintf(fid, '%-20s | %10s | %10s\n', 'Scenario', 'Final Err', 'Improvement');
-    fprintf(fid, '%s\n', repmat('-', 1, 45));
-    baseline = net_results(1).final_err_offset;
-    for s = 1:num_scenarios
-        fin = net_results(s).final_err_offset;
-        improvement = 100 * (baseline - fin) / baseline;
-        fprintf(fid, '%-20s | %10.3f | %+9.1f%%\n', net_results(s).name, fin, improvement);
-    end
-    fprintf(fid, '\n');
-
-    fclose(fid);
-
-    fprintf('\nNetwork %d results saved to:\n', network_id);
-    fprintf('  %s\n', fullfile(output_folder, sprintf('network_%d_results.csv', network_id)));
-    fprintf('  %s\n', fullfile(output_folder, sprintf('network_%d_terminal.txt', network_id)));
-
-    % Print to terminal too
-    fprintf('\n');
-    fprintf('NETWORK %d SUMMARY\n', network_id);
-    fprintf('%-20s | %8s | %8s | %10s\n', 'Scenario', 'Off Fin', 'Off MAE', 'Improvement');
-    fprintf('%s\n', repmat('-', 1, 55));
-    for s = 1:num_scenarios
-        r = net_results(s);
-        improvement = 100 * (baseline - r.final_err_offset) / baseline;
-        fprintf('%-20s | %8.3f | %8.3f | %+9.1f%%\n', ...
-            r.name, r.final_err_offset, r.tw_mae_offset, improvement);
-    end
-    fprintf('\n');
 end
 
-fprintf('\nAll networks processed. Results saved to results/sensor_test/\n');
+%% Print aggregate comparison table
+fprintf('\n\n############################################################\n');
+fprintf('AGGREGATE RESULTS ACROSS %d NETWORKS\n', num_networks);
+fprintf('############################################################\n\n');
+
+fprintf('%-20s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n', ...
+    'Scenario', 'Off MAE', 'Off Fin', 'Off Bias', 'Off Std', 'U MAE', 'Uc err', 'Rej %%');
+fprintf('%s\n', repmat('-', 1, 100));
+
+for s = 1:num_scenarios
+    a = agg_results(s);
+    fprintf('%-20s | %8.3f | %8.3f | %+8.3f | %8.3f | %8.4f | %+8.4f | %7.1f\n', ...
+        a.name, ...
+        mean(a.all_tw_mae_offset), ...
+        mean(a.all_final_err_offset), ...
+        mean(a.all_offset_bias), ...
+        mean(a.all_offset_std), ...
+        mean(a.all_tw_mae_U), ...
+        mean(a.all_U_csac_err), ...
+        mean(a.all_rej_pct));
+end
+fprintf('========================================\n');
+
+%% Per-CSAC breakdown (averaged across networks)
+fprintf('\nPER-CSAC FINAL OFFSET ERROR (averaged across %d networks)\n', num_networks);
+fprintf('%-20s | %8s | %8s | %8s | %8s\n', 'Scenario', 'CSAC0', 'CSAC1', 'CSAC2', 'CSAC3');
+fprintf('%s\n', repmat('-', 1, 60));
+for s = 1:num_scenarios
+    a = agg_results(s);
+    avg_per_csac = mean(a.all_per_csac_final_err, 1);
+    fprintf('%-20s | %8.3f | %8.3f | %8.3f | %8.3f\n', ...
+        a.name, avg_per_csac(1), avg_per_csac(2), avg_per_csac(3), avg_per_csac(4));
+end
+fprintf('========================================\n');
+
+%% Improvement summary
+fprintf('\nIMPROVEMENT vs NO SENSOR (Final offset error)\n');
+fprintf('%-20s | %10s | %10s\n', 'Scenario', 'Final Err', 'Improvement');
+fprintf('%s\n', repmat('-', 1, 45));
+baseline = mean(agg_results(1).all_final_err_offset);
+for s = 1:num_scenarios
+    fin = mean(agg_results(s).all_final_err_offset);
+    improvement = 100 * (baseline - fin) / baseline;
+    fprintf('%-20s | %10.3f | %+9.1f%%\n', agg_results(s).name, fin, improvement);
+end
+fprintf('========================================\n');
+
+%% Save results to CSV
+output_folder = fullfile('results', 'sensor_test');
+if ~exist(output_folder, 'dir'), mkdir(output_folder); end
+
+summary = table();
+for s = 1:num_scenarios
+    a = agg_results(s);
+    row = table();
+    row.scenario = {a.name};
+    row.num_sensors = numel(scenario_defs(s).sensor_indices);
+    row.mean_tw_mae_offset = mean(a.all_tw_mae_offset);
+    row.mean_final_err_offset = mean(a.all_final_err_offset);
+    row.mean_offset_bias = mean(a.all_offset_bias);
+    row.mean_offset_std = mean(a.all_offset_std);
+    row.mean_tw_mae_U = mean(a.all_tw_mae_U);
+    row.mean_U_csac_err = mean(a.all_U_csac_err);
+    row.mean_rej_pct = mean(a.all_rej_pct);
+    row.num_networks = num_networks;
+    summary = [summary; row]; %#ok<AGROW>
+end
+writetable(summary, fullfile(output_folder, 'sensor_comparison_aggregate.csv'));
+
+fprintf('\nResults saved to %s\n', fullfile(output_folder, 'sensor_comparison_aggregate.csv'));
+fprintf('Test complete.\n');
